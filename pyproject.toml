@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-autocomplete-plus-plus"
+description = "Tag autocomplete, prompt formatting, and dynamic prompt expansion extension for ComfyUI."
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/michikora/ComfyUI-Autocomplete-Plus-Plus"
+
+[tool.comfy]
+PublisherId = "michikora"
+DisplayName = "Autocomplete++"
+Icon = "https://raw.githubusercontent.com/michikora/ComfyUI-Autocomplete-Plus-Plus/main/assets/comfy/icon.png"
+Banner = "https://raw.githubusercontent.com/michikora/ComfyUI-Autocomplete-Plus-Plus/main/assets/comfy/banner.png"

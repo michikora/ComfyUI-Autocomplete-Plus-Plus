@@ -1,0 +1,15 @@
+<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="custom-gradient-1" x1="7.8" y1="16.2" x2="14.2" y2="9.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3274a4"></stop>
+      <stop offset="0" stop-color="#2f6896"></stop>
+      <stop offset="0.2" stop-color="#2a527c"></stop>
+      <stop offset="0.3" stop-color="#274168"></stop>
+      <stop offset="0.5" stop-color="#24355a"></stop>
+      <stop offset="0.7" stop-color="#232e52"></stop>
+      <stop offset="1" stop-color="#232c50"></stop>
+    </linearGradient>
+  </defs>
+  <rect fill="#d3e1e7" height="20" rx="2" ry="2" width="20" x="2" y="2"></rect>
+  <polygon fill="url(#custom-gradient-1)" points="14.2 13.2 11.4 13.2 11.4 7 8 7 8 13.2 8 16.4 11.4 16.4 16.6 16.4 14.2 13.2"></polygon>
+</svg>

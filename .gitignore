@@ -1,0 +1,15 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# User persistent data
+data/user_data.json
+data/*.tmp
+!data/.gitkeep
+
+# wildcards & translation csv
+tags/translations/*
+tags/wildcards/*
+!tags/translations/.gitkeep
+!tags/wildcards/.gitkeep
