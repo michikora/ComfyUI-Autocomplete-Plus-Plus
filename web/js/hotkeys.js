@@ -493,27 +493,93 @@ export function parseTopLevelTokens(line) {
     return tokens;
 }
 
+function joinTokenParts(left, right) {
+    if (!left) return right.trim();
+    if (!right) return left.trim();
+    if (/\s$/.test(left) || /^\s/.test(right)) {
+        return (left.trim() + " " + right.trim()).trim();
+    }
+    return left + right;
+}
+
 export function shiftTokensInScope(scopeText, selStart, selEnd, direction) {
     const tokens = parseTopLevelTokens(scopeText);
     if (tokens.length === 0) return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
 
-    // Active selection swap
+    // Selection movement
     if (selStart < selEnd) {
         const chunk = scopeText.substring(selStart, selEnd);
+        const trimmedChunk = chunk.trim();
+        if (!trimmedChunk) {
+            return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+        }
+
+        const selectedTokens = tokens.filter(t => t.start < selEnd && t.end > selStart);
+        if (selectedTokens.length === 0) {
+            return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+        }
+
+        // Sub-token extraction
+        if (selectedTokens.length === 1) {
+            const tok = selectedTokens[0];
+            const clampedStart = Math.max(tok.start, selStart);
+            const clampedEnd = Math.min(tok.end, selEnd);
+            const subChunk = scopeText.substring(clampedStart, clampedEnd).trim();
+
+            if (subChunk && subChunk !== tok.text) {
+                const leftPart = scopeText.substring(tok.start, clampedStart);
+                const rightPart = scopeText.substring(clampedEnd, tok.end);
+                const remainder = joinTokenParts(leftPart, rightPart);
+
+                const before = scopeText.substring(0, tok.start);
+                const after = scopeText.substring(tok.end);
+
+                let replacement;
+                let newSelStart;
+
+                if (direction === "right") {
+                    replacement = remainder ? (remainder + ", " + subChunk) : subChunk;
+                    newSelStart = tok.start + (remainder ? remainder.length + 2 : 0);
+                } else {
+                    replacement = remainder ? (subChunk + ", " + remainder) : subChunk;
+                    newSelStart = tok.start;
+                }
+
+                const newText = before + replacement + after;
+                const newSelEnd = newSelStart + subChunk.length;
+
+                return {
+                    text: newText,
+                    cursor: newSelStart,
+                    selectionStart: newSelStart,
+                    selectionEnd: newSelEnd
+                };
+            }
+        }
+
+        // Token block movement
+        const firstSelTok = selectedTokens[0];
+        const lastSelTok = selectedTokens[selectedTokens.length - 1];
+        const firstIdx = tokens.indexOf(firstSelTok);
+        const lastIdx = tokens.indexOf(lastSelTok);
+
+        const blockStart = firstSelTok.start;
+        const blockEnd = lastSelTok.end;
+        const blockText = scopeText.substring(blockStart, blockEnd);
 
         if (direction === "right") {
-            const nextTok = tokens.find(t => t.start >= selEnd);
-            if (!nextTok) {
-                return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+            if (lastIdx + 1 >= tokens.length) {
+                return { text: scopeText, cursor: selStart, selectionStart: blockStart, selectionEnd: blockEnd };
             }
-            const before = scopeText.substring(0, selStart);
-            const sep = scopeText.substring(selEnd, nextTok.start);
-            const neighborText = scopeText.substring(nextTok.start, nextTok.end);
-            const after = scopeText.substring(nextTok.end);
+            const targetTok = tokens[lastIdx + 1];
+            const before = scopeText.substring(0, blockStart);
+            const sep = scopeText.substring(blockEnd, targetTok.start);
+            const targetText = scopeText.substring(targetTok.start, targetTok.end);
+            const after = scopeText.substring(targetTok.end);
 
-            const newText = before + neighborText + sep + chunk + after;
-            const newSelStart = selStart + neighborText.length + sep.length;
-            const newSelEnd = newSelStart + chunk.length;
+            const newText = before + targetText + sep + blockText + after;
+            const newSelStart = blockStart + targetText.length + sep.length;
+            const newSelEnd = newSelStart + blockText.length;
 
             return {
                 text: newText,
@@ -522,18 +588,18 @@ export function shiftTokensInScope(scopeText, selStart, selEnd, direction) {
                 selectionEnd: newSelEnd
             };
         } else {
-            const prevTok = tokens.filter(t => t.end <= selStart).pop();
-            if (!prevTok) {
-                return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+            if (firstIdx - 1 < 0) {
+                return { text: scopeText, cursor: selStart, selectionStart: blockStart, selectionEnd: blockEnd };
             }
-            const before = scopeText.substring(0, prevTok.start);
-            const neighborText = scopeText.substring(prevTok.start, prevTok.end);
-            const sep = scopeText.substring(prevTok.end, selStart);
-            const after = scopeText.substring(selEnd);
+            const targetTok = tokens[firstIdx - 1];
+            const before = scopeText.substring(0, targetTok.start);
+            const targetText = scopeText.substring(targetTok.start, targetTok.end);
+            const sep = scopeText.substring(targetTok.end, blockStart);
+            const after = scopeText.substring(blockEnd);
 
-            const newText = before + chunk + sep + neighborText + after;
-            const newSelStart = prevTok.start;
-            const newSelEnd = newSelStart + chunk.length;
+            const newText = before + blockText + sep + targetText + after;
+            const newSelStart = targetTok.start;
+            const newSelEnd = newSelStart + blockText.length;
 
             return {
                 text: newText,
@@ -623,13 +689,46 @@ export function shiftTagAtCursor(text, selStart, selEnd, direction) {
                 const optStart = optOffset;
                 const optEnd = optOffset + rawOpt.length;
                 options.push({ text: rawOpt.trim(), raw: rawOpt, start: optStart, end: optEnd });
-                if (selStart >= optStart && selStart <= optEnd) {
+                if (selStart >= optStart && (selEnd <= optEnd || selStart === selEnd)) {
                     activeOptionIndex = idx;
                 }
                 optOffset = optEnd + 1;
             }
 
             if (activeOptionIndex === -1) return { text, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+
+            const activeOpt = options[activeOptionIndex];
+            const subTokens = parseTopLevelTokens(activeOpt.raw);
+            const trimmedStart = activeOpt.start + (activeOpt.raw.length - activeOpt.raw.trimStart().length);
+            const trimmedEnd = activeOpt.end - (activeOpt.raw.length - activeOpt.raw.trimEnd().length);
+            const isWholeOptionSelected = selStart < selEnd && selStart <= trimmedStart && selEnd >= trimmedEnd;
+
+            // Shift within option if it contains multiple comma-separated tokens
+            if (subTokens.length > 1 && !isWholeOptionSelected) {
+                const relSelStart = selStart - activeOpt.start;
+                const relSelEnd = selEnd - activeOpt.start;
+                const res = shiftTokensInScope(activeOpt.raw, relSelStart, relSelEnd, direction);
+
+                if (res.text === activeOpt.raw) {
+                    return {
+                        text,
+                        cursor: res.cursor + activeOpt.start,
+                        selectionStart: (res.selectionStart !== undefined ? res.selectionStart : res.cursor) + activeOpt.start,
+                        selectionEnd: (res.selectionEnd !== undefined ? res.selectionEnd : res.cursor) + activeOpt.start
+                    };
+                }
+
+                const newText = text.substring(0, activeOpt.start) + res.text + text.substring(activeOpt.end);
+                const newSelStart = (res.selectionStart !== undefined ? res.selectionStart : res.cursor) + activeOpt.start;
+                const newSelEnd = (res.selectionEnd !== undefined ? res.selectionEnd : res.cursor) + activeOpt.start;
+
+                return {
+                    text: newText,
+                    cursor: res.cursor + activeOpt.start,
+                    selectionStart: newSelStart,
+                    selectionEnd: newSelEnd
+                };
+            }
 
             const targetIndex = direction === "left" ? activeOptionIndex - 1 : activeOptionIndex + 1;
             if (targetIndex < 0 || targetIndex >= options.length) {
@@ -640,8 +739,6 @@ export function shiftTagAtCursor(text, selStart, selEnd, direction) {
                     selectionEnd: options[activeOptionIndex].end
                 };
             }
-
-            const activeOpt = options[activeOptionIndex];
             const targetOpt = options[targetIndex];
             const relCursor = Math.max(0, Math.min(activeOpt.raw.length, selStart - activeOpt.start));
 
@@ -785,6 +882,11 @@ export function handleAutoCloseCurlyBraces(event, textarea, effectiveSettings) {
 export function handlePromptKeyDown(event) {
     const textarea = event.target;
     if (!textarea || textarea.tagName !== "TEXTAREA" || textarea.readOnly) return;
+
+    if (!textarea._hasTagSwapHistoryAttached) {
+        textarea.addEventListener("input", handleTagSwapHistoryInput, true);
+        textarea._hasTagSwapHistoryAttached = true;
+    }
 
     if (handleAutoCloseCurlyBraces(event, textarea)) {
         return;
@@ -987,19 +1089,94 @@ export function handlePromptKeyDown(event) {
         const result = shiftTagAtCursor(text, selStart, selEnd, direction);
 
         if (result.text !== text) {
-            textarea.value = result.text;
+            const scrollTop = textarea.scrollTop;
+            const scrollLeft = textarea.scrollLeft;
+
             const newSelStart = result.selectionStart !== undefined ? result.selectionStart : result.cursor;
             const newSelEnd = result.selectionEnd !== undefined ? result.selectionEnd : result.cursor;
-            textarea.setSelectionRange(newSelStart, newSelEnd);
-            textarea.dispatchEvent(new Event("input", { bubbles: true }));
-            textarea.dispatchEvent(new Event("change", { bubbles: true }));
+
+            if (!textarea._tagSwapUndoStack) textarea._tagSwapUndoStack = [];
+            textarea._tagSwapUndoStack.push({
+                origText: text,
+                newText: result.text,
+                origSelStart: selStart,
+                origSelEnd: selEnd,
+                newSelStart,
+                newSelEnd
+            });
+            textarea._tagSwapRedoStack = [];
+
+            let diffStart = 0;
+            while (diffStart < text.length && diffStart < result.text.length && text[diffStart] === result.text[diffStart]) {
+                diffStart++;
+            }
+            let oldDiffEnd = text.length;
+            let newDiffEnd = result.text.length;
+            while (oldDiffEnd > diffStart && newDiffEnd > diffStart && text[oldDiffEnd - 1] === result.text[newDiffEnd - 1]) {
+                oldDiffEnd--;
+                newDiffEnd--;
+            }
+
+            const replacementSlice = result.text.substring(diffStart, newDiffEnd);
+            textarea.setSelectionRange(diffStart, oldDiffEnd);
+            insertTextWithUndo(textarea, replacementSlice, newSelStart, newSelEnd);
+
+            if (typeof textarea.scrollTop === "number") {
+                textarea.scrollTop = scrollTop;
+            }
+            if (typeof textarea.scrollLeft === "number") {
+                textarea.scrollLeft = scrollLeft;
+            }
         }
         return;
+    }
+}
+
+export function handleTagSwapHistoryInput(event) {
+    const textarea = event.target;
+    if (!textarea) return;
+
+    if (event.inputType === "historyUndo") {
+        if (textarea._tagSwapUndoStack && textarea._tagSwapUndoStack.length > 0) {
+            const entry = textarea._tagSwapUndoStack[textarea._tagSwapUndoStack.length - 1];
+            if (textarea.value === entry.origText) {
+                textarea._tagSwapUndoStack.pop();
+                textarea.setSelectionRange(entry.origSelStart, entry.origSelEnd);
+                if (!textarea._tagSwapRedoStack) textarea._tagSwapRedoStack = [];
+                textarea._tagSwapRedoStack.push(entry);
+                queueMicrotask(() => {
+                    if (textarea.value === entry.origText) {
+                        textarea.setSelectionRange(entry.origSelStart, entry.origSelEnd);
+                    }
+                });
+            }
+        }
+    } else if (event.inputType === "historyRedo") {
+        if (textarea._tagSwapRedoStack && textarea._tagSwapRedoStack.length > 0) {
+            const entry = textarea._tagSwapRedoStack[textarea._tagSwapRedoStack.length - 1];
+            if (textarea.value === entry.newText) {
+                textarea._tagSwapRedoStack.pop();
+                textarea.setSelectionRange(entry.newSelStart, entry.newSelEnd);
+                if (!textarea._tagSwapUndoStack) textarea._tagSwapUndoStack = [];
+                textarea._tagSwapUndoStack.push(entry);
+                queueMicrotask(() => {
+                    if (textarea.value === entry.newText) {
+                        textarea.setSelectionRange(entry.newSelStart, entry.newSelEnd);
+                    }
+                });
+            }
+        }
+    } else if (event.inputType && event.inputType !== "historyUndo" && event.inputType !== "historyRedo") {
+        if (textarea._tagSwapRedoStack && textarea._tagSwapRedoStack.length > 0) {
+            textarea._tagSwapRedoStack = [];
+        }
     }
 }
 
 export function attachHotkeysToTextarea(textarea) {
     if (!textarea || textarea._hasTagHotkeysAttached) return;
     textarea.addEventListener("keydown", handlePromptKeyDown, true); // Capture phase
+    textarea.addEventListener("input", handleTagSwapHistoryInput, true);
     textarea._hasTagHotkeysAttached = true;
+    textarea._hasTagSwapHistoryAttached = true;
 }
