@@ -101,6 +101,11 @@ Clone or copy this repository into the `custom_nodes` folder of ComfyUI.
     - Swaps the current tag with its left or right neighbor while keeping cursor focus on the moved tag.
     - Confines reordering inside `{a|b|c}` options without leaking outside.
     - Jumps over `{a|b|c}`, `<lora:...>`, and `__wildcard__` blocks as single units.
+- **Auto-Close Curly Braces**:
+    - Typing `{` automatically inserts the closing brace `}` and places the cursor inside.
+    - Typing `{` with text selected wraps the selection in braces.
+    - Typing `}` right before an existing `}` moves the cursor past it instead of inserting a duplicate.
+    - Pressing `Backspace` between empty braces `{}` deletes both braces at once.
 
 ---
 
@@ -150,7 +155,7 @@ Autocomplete++ provides 4 optional standalone controller nodes located under the
 - **`Autocomplete++ Wildcard & Dynamic Controller`**:
     - Overrides Prompt Expansion Engine (`Enabled` / `Disabled`), Wildcard Mode (`Random` / `Follow Seed` / `Keep Last Choice` / `Sequential`), and Dynamic Prompt Mode (`Random` / `Follow Seed` / `Keep Last Choice`).
 - **`Autocomplete++ Formatting Controller`**:
-    - Overrides auto-format on blur, comma spacing, trailing comma trimming, underscore-to-space replacement, parenthesis escaping, auto-insert comma, Anima artist mode (`@`), and provides custom Keep Underscores tag entries (`Append to Global List` or `Override Global List`).
+    - Overrides Anima artist mode (`@`), auto-insert comma, underscore-to-space replacement, parenthesis escaping, auto-closing curly braces, auto-format on blur, comma spacing, trailing comma trimming, underscore replacement, and provides custom Keep Underscores tag entries (`Append to Global List` or `Override Global List`).
 - **`Autocomplete++ Integrations Controller`**:
     - Overrides LoRA & Embedding suggestion availability, LoRA path completion mode, and LoRA Manager trigger word / preview integration behavior.
 - **`Autocomplete++ Dictionaries Controller`**:
@@ -289,6 +294,7 @@ Access settings via the ComfyUI Settings Dialog under **Autocomplete++**:
     - `Auto-Insert Comma`: Automatically appends a comma and space after inserting a tag.
     - `Replace Underscore with Space`: Replaces underscores with spaces on tag insertion.
     - `Escape Parentheses`: Automatically escapes literal parentheses (e.g. `tag (qualifier)` &rarr; `tag \(qualifier\)`).
+    - `Auto-Close Curly Braces`: Automatically inserts the closing brace `}` when typing `{`.
     - `Auto Format on Blur`: Formats prompt text when textarea loses focus.
     - `Auto Format Rules`: Individual toggles for space after comma, trim prompt end comma, trim line end comma, and replace underscores with spaces.
     - `Keep Underscores for Tags`: Specify tags (comma-separated) to exempt from underscore replacement and preserve literal underscores.

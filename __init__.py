@@ -46,14 +46,15 @@ class AutocompletePlusFormattingController:
         return {
             "required": {
                 "anima_artist_mode": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
+                "auto_insert_comma": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
+                "replace_underscore": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
+                "escape_parentheses": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
+                "auto_close_curly_braces": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "auto_format_on_blur": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "format_space_after_comma": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "format_trim_prompt_end_comma": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "format_trim_line_end_comma": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "format_replace_underscore": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
-                "escape_parentheses": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
-                "auto_insert_comma": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
-                "replace_underscore": (["Default (From Settings)", "Enabled", "Disabled"], {"default": "Default (From Settings)"}),
                 "keep_underscores_mode": (["Default (From Settings)", "Append to Global List", "Override Global List"], {"default": "Default (From Settings)"}),
                 "keep_underscores_list": ("STRING", {"default": "", "multiline": True, "placeholder": "e.g. custom_tag, special_style..."}),
             },
@@ -68,12 +69,12 @@ class AutocompletePlusFormattingController:
     CATEGORY = "Autocomplete++"
     OUTPUT_NODE = True
 
-    def execute(self, anima_artist_mode="Default (From Settings)", auto_format_on_blur="Default (From Settings)",
+    def execute(self, anima_artist_mode="Default (From Settings)", auto_insert_comma="Default (From Settings)",
+                replace_underscore="Default (From Settings)", escape_parentheses="Default (From Settings)",
+                auto_close_curly_braces="Default (From Settings)", auto_format_on_blur="Default (From Settings)",
                 format_space_after_comma="Default (From Settings)", format_trim_prompt_end_comma="Default (From Settings)",
                 format_trim_line_end_comma="Default (From Settings)", format_replace_underscore="Default (From Settings)",
-                escape_parentheses="Default (From Settings)", auto_insert_comma="Default (From Settings)",
-                replace_underscore="Default (From Settings)", keep_underscores_mode="Default (From Settings)",
-                keep_underscores_list="", passthrough=None):
+                keep_underscores_mode="Default (From Settings)", keep_underscores_list="", passthrough=None):
         return (passthrough,)
 
 

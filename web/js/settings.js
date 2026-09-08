@@ -23,6 +23,7 @@ export const settingValues = {
     animaArtistMode: "Auto",
     replaceUnderscore: true,
     escapeParentheses: true,
+    autoCloseCurlyBraces: true,
     frequencySort: true,
     favorMinCount: 5,
     favorMaxAge: 30,
@@ -144,6 +145,7 @@ try {
     settingValues.animaArtistMode = loadSetting("AnimaArtistMode", "Auto");
     settingValues.replaceUnderscore = loadSetting("ReplaceUnderscore", true);
     settingValues.escapeParentheses = loadSetting("EscapeParentheses", true);
+    settingValues.autoCloseCurlyBraces = loadSetting("AutoCloseCurlyBraces", true);
     settingValues.frequencySort = loadSetting("FrequencySort", true);
     settingValues.favorMinCount = loadSetting("FavorMinCount", 5, true);
     settingValues.favorMaxAge = loadSetting("FavorMaxAge", 30, true);
@@ -953,6 +955,19 @@ export function registerSettings(app) {
             settingValues.autoFormatOnBlur = checked;
             persistSetting("AutoFormatOnBlur", checked);
             window.dispatchEvent(new CustomEvent("autocomplete-format-blur-toggled", { detail: checked }));
+        }
+    });
+
+    app.ui.settings.addSetting({
+        id: id + ".AutoCloseCurlyBraces",
+        name: "Auto-Close Curly Braces",
+        tooltip: "Automatically insert closing brace '}' when typing '{', with type-over, pair deletion, and selection wrapping.",
+        type: "boolean",
+        defaultValue: settingValues.autoCloseCurlyBraces,
+        category: [name, "Formatting", "Auto-Close Curly Braces"],
+        onChange: (newVal) => {
+            settingValues.autoCloseCurlyBraces = !!newVal;
+            persistSetting("AutoCloseCurlyBraces", settingValues.autoCloseCurlyBraces);
         }
     });
 

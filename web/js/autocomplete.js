@@ -1315,24 +1315,28 @@ export class TagCompleteEngine {
             }
         }
 
-        // 2. Determine if cursor is inside an unclosed Dynamic Prompt { ... } or Alternation [ ... ]
+        // 2. Determine if cursor is inside an open Dynamic Prompt { ... } container
         let insideChoiceContainer = false;
         let depthBrace = 0;
-        let depthBracket = 0;
         for (let k = cursor - 1; k >= 0; k--) {
             const ch = text[k];
-            const esc = (k > 0 && text[k - 1] === '\\');
-            if (esc) continue;
-            if (ch === '}') depthBrace++;
-            else if (ch === '{') {
-                if (depthBrace > 0) depthBrace--;
-                else { insideChoiceContainer = true; break; }
-            } else if (ch === ']') depthBracket++;
-            else if (ch === '[') {
-                if (depthBracket > 0) depthBracket--;
-                else { insideChoiceContainer = true; break; }
-            } else if (ch === '\n' || ch === '\r') {
-                break;
+            let backslashCount = 0;
+            let b = k - 1;
+            while (b >= 0 && text[b] === '\\') {
+                backslashCount++;
+                b--;
+            }
+            if ((backslashCount % 2) === 1) continue;
+
+            if (ch === '}') {
+                depthBrace++;
+            } else if (ch === '{') {
+                if (depthBrace > 0) {
+                    depthBrace--;
+                } else {
+                    insideChoiceContainer = true;
+                    break;
+                }
             }
         }
 
@@ -1340,7 +1344,14 @@ export class TagCompleteEngine {
         let start = cursor;
         while (start > 0) {
             const c = text[start - 1];
-            const isEscaped = (start - 2 >= 0 && text[start - 2] === '\\');
+            let backslashCount = 0;
+            let b = start - 2;
+            while (b >= 0 && text[b] === '\\') {
+                backslashCount++;
+                b--;
+            }
+            const isEscaped = (backslashCount % 2) === 1;
+
             if (c === ',' || c === '\n' || c === '\r') {
                 break;
             }

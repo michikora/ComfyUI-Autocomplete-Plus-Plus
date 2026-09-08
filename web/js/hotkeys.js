@@ -1,4 +1,5 @@
 import { settingValues } from "./settings.js";
+import { getEffectiveFormattingSettings } from "./auto-formatter.js";
 
 export function formatWeight(val, step = 0.05) {
     const stepStr = step.toString();
@@ -195,6 +196,99 @@ export function findTagBoundariesForWeight(text, cursor) {
     };
 }
 
+export function splitDynamicPromptOptions(inner) {
+    const rawOptions = [];
+    let depth = 0;
+    let optStart = 0;
+    for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        let backslashCount = 0;
+        let b = i - 1;
+        while (b >= 0 && inner[b] === '\\') {
+            backslashCount++;
+            b--;
+        }
+        const isEscaped = (backslashCount % 2) === 1;
+
+        if (ch === '{' && !isEscaped) depth++;
+        else if (ch === '}' && !isEscaped) {
+            if (depth > 0) depth--;
+        } else if (ch === '|' && depth === 0 && !isEscaped) {
+            rawOptions.push(inner.substring(optStart, i));
+            optStart = i + 1;
+        }
+    }
+    rawOptions.push(inner.substring(optStart));
+    return rawOptions;
+}
+
+export function findInnermostEnclosingBrace(text, selStart, selEnd) {
+    if (!text) return null;
+    if (typeof selEnd === "undefined") selEnd = selStart;
+    const stack = [];
+    const pairs = [];
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        let backslashCount = 0;
+        let b = i - 1;
+        while (b >= 0 && text[b] === '\\') {
+            backslashCount++;
+            b--;
+        }
+        const isEscaped = (backslashCount % 2) === 1;
+        if (isEscaped) continue;
+
+        if (ch === '{') {
+            stack.push(i);
+        } else if (ch === '}') {
+            if (stack.length > 0) {
+                const start = stack.pop();
+                pairs.push({ start, end: i + 1 });
+            }
+        }
+    }
+
+    // Sort innermost enclosing braces first
+    const enclosing = pairs
+        .filter(p => selStart > p.start && selEnd < p.end)
+        .sort((a, b) => (a.end - a.start) - (b.end - b.start));
+
+    for (const pair of enclosing) {
+        const inner = text.substring(pair.start + 1, pair.end - 1);
+        const options = splitDynamicPromptOptions(inner);
+        if (options.length > 1) {
+            return {
+                start: pair.start,
+                end: pair.end,
+                hasPipe: true,
+                rawOptions: options
+            };
+        }
+
+        const tokens = parseTopLevelTokens(inner);
+        if (tokens.length > 1) {
+            return {
+                start: pair.start,
+                end: pair.end,
+                hasPipe: false,
+                rawOptions: options,
+                tokens: tokens
+            };
+        }
+        // Single tag (e.g. {tag}) bubbles up to outer scope
+    }
+
+    return null;
+}
+
+export function findInnermostEnclosingDp(text, cursor) {
+    const brace = findInnermostEnclosingBrace(text, cursor, cursor);
+    if (brace && brace.hasPipe) {
+        return brace;
+    }
+    return null;
+}
+
 export function getTagLandingPositions(text) {
     const positions = [];
     if (!text) return positions;
@@ -205,6 +299,8 @@ export function getTagLandingPositions(text) {
             i++;
         }
         if (i >= text.length) break;
+
+        const tokenStart = i;
 
         // 1. Dynamic Prompt container { ... }
         if (text[i] === '{') {
@@ -221,7 +317,7 @@ export function getTagLandingPositions(text) {
             if (braceEnd !== -1) {
                 const inner = text.substring(i + 1, braceEnd);
                 let optStart = i + 1;
-                const options = inner.split(/\|/);
+                const options = splitDynamicPromptOptions(inner);
                 for (let k = 0; k < options.length; k++) {
                     const opt = options[k];
                     let subStart = optStart;
@@ -238,6 +334,9 @@ export function getTagLandingPositions(text) {
                     optStart += opt.length + 1;
                 }
                 i = braceEnd + 1;
+                continue;
+            } else {
+                i++;
                 continue;
             }
         }
@@ -264,13 +363,18 @@ export function getTagLandingPositions(text) {
 
         // 4. Standard Tag (scan to next delimiter)
         let tagStart = i;
-        while (i < text.length && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r' && text[i] !== '{') {
+        while (i < text.length && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r' && (i === tagStart || text[i] !== '{')) {
             i++;
         }
         const tagContent = text.substring(tagStart, i);
         const trimmedEnd = tagStart + tagContent.trimEnd().length;
         if (trimmedEnd > tagStart) {
             positions.push(trimmedEnd);
+        }
+
+        // Ensure index advances
+        if (i <= tokenStart) {
+            i = tokenStart + 1;
         }
     }
 
@@ -298,7 +402,7 @@ export function parseTopLevelTokens(line) {
     const tokens = [];
     let i = 0;
     while (i < line.length) {
-        while (i < line.length && (line[i] === ' ' || line[i] === '\t' || line[i] === ',')) {
+        while (i < line.length && (line[i] === ' ' || line[i] === '\t' || line[i] === ',' || line[i] === '\n' || line[i] === '\r')) {
             i++;
         }
         if (i >= line.length) break;
@@ -310,10 +414,20 @@ export function parseTopLevelTokens(line) {
             let depth = 0;
             let closeIdx = -1;
             for (let j = i; j < line.length; j++) {
-                if (line[j] === '{') depth++;
-                else if (line[j] === '}') {
-                    depth--;
-                    if (depth === 0) { closeIdx = j; break; }
+                let backslashCount = 0;
+                let b = j - 1;
+                while (b >= 0 && line[b] === '\\') {
+                    backslashCount++;
+                    b--;
+                }
+                const isEscaped = (backslashCount % 2) === 1;
+
+                if (!isEscaped) {
+                    if (line[j] === '{') depth++;
+                    else if (line[j] === '}') {
+                        depth--;
+                        if (depth === 0) { closeIdx = j; break; }
+                    }
                 }
             }
             if (closeIdx !== -1) {
@@ -325,7 +439,16 @@ export function parseTopLevelTokens(line) {
                 });
                 i = closeIdx + 1;
                 continue;
+            } else {
+                // Consume unclosed opening brace
+                i++;
+                continue;
             }
+        }
+
+        if (line[i] === '}') {
+            i++;
+            continue;
         }
 
         // 2. LoRA < ... >
@@ -344,96 +467,85 @@ export function parseTopLevelTokens(line) {
         }
 
         // 3. Normal / Weighted Tag up to next comma
-        while (i < line.length && line[i] !== ',') {
-            if (line[i] === '{') break;
+        while (i < line.length && line[i] !== ',' && line[i] !== '\n' && line[i] !== '\r') {
+            if (i > tokenStart && (line[i] === '{' || line[i] === '}')) break;
             i++;
         }
 
         const raw = line.substring(tokenStart, i);
         const trimmed = raw.trim();
-        if (trimmed) {
+        if (trimmed && !/^[{}|,;\s]+$/.test(trimmed)) {
+            const leadingWs = raw.length - raw.trimStart().length;
+            const actualStart = tokenStart + leadingWs;
             tokens.push({
                 type: "tag",
                 text: trimmed,
-                start: tokenStart,
-                end: tokenStart + raw.trimEnd().length
+                start: actualStart,
+                end: actualStart + trimmed.length
             });
+        }
+
+        // Ensure index advances
+        if (i <= tokenStart) {
+            i = tokenStart + 1;
         }
     }
     return tokens;
 }
 
-export function shiftTagAtCursor(text, cursor, direction) {
-    if (!text) return { text, cursor };
+export function shiftTokensInScope(scopeText, selStart, selEnd, direction) {
+    const tokens = parseTopLevelTokens(scopeText);
+    if (tokens.length === 0) return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
 
-    // Check if cursor is inside a Dynamic Prompt { ... }
-    let dpBlock = null;
-    let depth = 0;
-    for (let k = 0; k < text.length; k++) {
-        if (text[k] === '{') {
-            if (depth === 0) dpBlock = { start: k };
-            depth++;
-        } else if (text[k] === '}') {
-            depth--;
-            if (depth === 0 && dpBlock) {
-                dpBlock.end = k + 1;
-                if (cursor >= dpBlock.start && cursor <= dpBlock.end) {
-                    break;
-                } else {
-                    dpBlock = null;
-                }
+    // Active selection swap
+    if (selStart < selEnd) {
+        const chunk = scopeText.substring(selStart, selEnd);
+
+        if (direction === "right") {
+            const nextTok = tokens.find(t => t.start >= selEnd);
+            if (!nextTok) {
+                return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
             }
+            const before = scopeText.substring(0, selStart);
+            const sep = scopeText.substring(selEnd, nextTok.start);
+            const neighborText = scopeText.substring(nextTok.start, nextTok.end);
+            const after = scopeText.substring(nextTok.end);
+
+            const newText = before + neighborText + sep + chunk + after;
+            const newSelStart = selStart + neighborText.length + sep.length;
+            const newSelEnd = newSelStart + chunk.length;
+
+            return {
+                text: newText,
+                cursor: newSelStart,
+                selectionStart: newSelStart,
+                selectionEnd: newSelEnd
+            };
+        } else {
+            const prevTok = tokens.filter(t => t.end <= selStart).pop();
+            if (!prevTok) {
+                return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+            }
+            const before = scopeText.substring(0, prevTok.start);
+            const neighborText = scopeText.substring(prevTok.start, prevTok.end);
+            const sep = scopeText.substring(prevTok.end, selStart);
+            const after = scopeText.substring(selEnd);
+
+            const newText = before + chunk + sep + neighborText + after;
+            const newSelStart = prevTok.start;
+            const newSelEnd = newSelStart + chunk.length;
+
+            return {
+                text: newText,
+                cursor: newSelStart,
+                selectionStart: newSelStart,
+                selectionEnd: newSelEnd
+            };
         }
     }
 
-    // Dynamic prompt case
-    if (dpBlock && cursor > dpBlock.start && cursor < dpBlock.end) {
-        const inner = text.substring(dpBlock.start + 1, dpBlock.end - 1);
-        const rawOptions = inner.split(/\|/);
-        const options = [];
-        let optOffset = dpBlock.start + 1;
-
-        let activeOptionIndex = -1;
-        for (let idx = 0; idx < rawOptions.length; idx++) {
-            const rawOpt = rawOptions[idx];
-            const optStart = optOffset;
-            const optEnd = optOffset + rawOpt.length;
-            options.push({ text: rawOpt.trim(), raw: rawOpt, start: optStart, end: optEnd });
-            if (cursor >= optStart && cursor <= optEnd) {
-                activeOptionIndex = idx;
-            }
-            optOffset = optEnd + 1;
-        }
-
-        if (activeOptionIndex === -1) return { text, cursor };
-
-        const targetIndex = direction === "left" ? activeOptionIndex - 1 : activeOptionIndex + 1;
-        if (targetIndex < 0 || targetIndex >= options.length) {
-            return { text, cursor }; // Confined inside { ... }
-        }
-
-        const activeOpt = options[activeOptionIndex];
-        const targetOpt = options[targetIndex];
-        const relCursor = Math.max(0, Math.min(activeOpt.text.length, cursor - (activeOpt.start + (activeOpt.raw.length - activeOpt.raw.trimStart().length))));
-
-        const newOptions = [...options];
-        newOptions[activeOptionIndex] = targetOpt;
-        newOptions[targetIndex] = activeOpt;
-
-        const newInner = newOptions.map(o => o.text).join(" | ");
-        const newText = text.substring(0, dpBlock.start + 1) + newInner + text.substring(dpBlock.end - 1);
-
-        let newOptOffset = dpBlock.start + 1;
-        for (let idx = 0; idx < targetIndex; idx++) {
-            newOptOffset += newOptions[idx].text.length + 3;
-        }
-        const newCursor = newOptOffset + relCursor;
-
-        return { text: newText, cursor: newCursor };
-    }
-
-    // Top-level prompt tag shifting
-    const tokens = parseTopLevelTokens(text);
+    // Single cursor swap
+    const cursor = selStart;
     let activeTokenIndex = -1;
     for (let idx = 0; idx < tokens.length; idx++) {
         const tok = tokens[idx];
@@ -443,35 +555,240 @@ export function shiftTagAtCursor(text, cursor, direction) {
         }
     }
 
-    if (activeTokenIndex === -1) return { text, cursor };
+    if (activeTokenIndex === -1) return { text: scopeText, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
 
     const targetTokenIndex = direction === "left" ? activeTokenIndex - 1 : activeTokenIndex + 1;
     if (targetTokenIndex < 0 || targetTokenIndex >= tokens.length) {
-        return { text, cursor };
+        return {
+            text: scopeText,
+            cursor: selStart,
+            selectionStart: tokens[activeTokenIndex].start,
+            selectionEnd: tokens[activeTokenIndex].end
+        };
     }
 
     const activeTok = tokens[activeTokenIndex];
     const targetTok = tokens[targetTokenIndex];
-    const relCursor = Math.max(0, Math.min(activeTok.text.length, cursor - activeTok.start));
+    const firstTok = activeTokenIndex < targetTokenIndex ? activeTok : targetTok;
+    const secondTok = activeTokenIndex < targetTokenIndex ? targetTok : activeTok;
 
-    const newTokens = [...tokens];
-    newTokens[activeTokenIndex] = targetTok;
-    newTokens[targetTokenIndex] = activeTok;
+    const before = scopeText.substring(0, firstTok.start);
+    const sep = scopeText.substring(firstTok.end, secondTok.start);
+    const after = scopeText.substring(secondTok.end);
 
-    const newText = newTokens.map(t => t.text).join(", ");
+    const newText = before + secondTok.text + sep + firstTok.text + after;
 
-    let newOffset = 0;
-    for (let idx = 0; idx < targetTokenIndex; idx++) {
-        newOffset += newTokens[idx].text.length + 2;
+    let newActiveStart;
+    if (direction === "right") {
+        newActiveStart = firstTok.start + secondTok.text.length + sep.length;
+    } else {
+        newActiveStart = firstTok.start;
     }
-    const newCursor = newOffset + relCursor;
+    const newActiveEnd = newActiveStart + activeTok.text.length;
 
-    return { text: newText, cursor: newCursor };
+    return {
+        text: newText,
+        cursor: newActiveStart,
+        selectionStart: newActiveStart,
+        selectionEnd: newActiveEnd
+    };
+}
+
+export function shiftTagAtCursor(text, selStart, selEnd, direction) {
+    if (!text) return { text, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+
+    // Backward compatibility if called as shiftTagAtCursor(text, cursor, direction)
+    if (typeof direction === "undefined" && typeof selEnd === "string") {
+        direction = selEnd;
+        selEnd = selStart;
+    }
+    if (typeof selEnd === "undefined") {
+        selEnd = selStart;
+    }
+
+    // Check enclosing brace container
+    const braceBlock = findInnermostEnclosingBrace(text, selStart, selEnd);
+
+    if (braceBlock) {
+        if (braceBlock.hasPipe) {
+            // Case 1: Alternation container {opt1|opt2|...}
+            const inner = text.substring(braceBlock.start + 1, braceBlock.end - 1);
+            const rawOptions = braceBlock.rawOptions || splitDynamicPromptOptions(inner);
+            const options = [];
+            let optOffset = braceBlock.start + 1;
+
+            let activeOptionIndex = -1;
+            for (let idx = 0; idx < rawOptions.length; idx++) {
+                const rawOpt = rawOptions[idx];
+                const optStart = optOffset;
+                const optEnd = optOffset + rawOpt.length;
+                options.push({ text: rawOpt.trim(), raw: rawOpt, start: optStart, end: optEnd });
+                if (selStart >= optStart && selStart <= optEnd) {
+                    activeOptionIndex = idx;
+                }
+                optOffset = optEnd + 1;
+            }
+
+            if (activeOptionIndex === -1) return { text, cursor: selStart, selectionStart: selStart, selectionEnd: selEnd };
+
+            const targetIndex = direction === "left" ? activeOptionIndex - 1 : activeOptionIndex + 1;
+            if (targetIndex < 0 || targetIndex >= options.length) {
+                return {
+                    text,
+                    cursor: selStart,
+                    selectionStart: options[activeOptionIndex].start,
+                    selectionEnd: options[activeOptionIndex].end
+                };
+            }
+
+            const activeOpt = options[activeOptionIndex];
+            const targetOpt = options[targetIndex];
+            const relCursor = Math.max(0, Math.min(activeOpt.raw.length, selStart - activeOpt.start));
+
+            const newOptions = [...options];
+            newOptions[activeOptionIndex] = targetOpt;
+            newOptions[targetIndex] = activeOpt;
+
+            const newInner = newOptions.map(o => o.raw).join("|");
+            const newText = text.substring(0, braceBlock.start + 1) + newInner + text.substring(braceBlock.end - 1);
+
+            let newOptOffset = braceBlock.start + 1;
+            for (let idx = 0; idx < targetIndex; idx++) {
+                newOptOffset += newOptions[idx].raw.length + 1;
+            }
+            const newCursor = newOptOffset + relCursor;
+
+            return {
+                text: newText,
+                cursor: newCursor,
+                selectionStart: newOptOffset,
+                selectionEnd: newOptOffset + activeOpt.raw.length
+            };
+        } else {
+            // Case 2: Comma-delimited container {tag1, tag2, ...}
+            const innerOffset = braceBlock.start + 1;
+            const inner = text.substring(innerOffset, braceBlock.end - 1);
+            const relSelStart = selStart - innerOffset;
+            const relSelEnd = selEnd - innerOffset;
+
+            const res = shiftTokensInScope(inner, relSelStart, relSelEnd, direction);
+            if (res.text === inner) {
+                // Keep selection adjusted to global coords when at boundary
+                return {
+                    text,
+                    cursor: res.cursor + innerOffset,
+                    selectionStart: (res.selectionStart !== undefined ? res.selectionStart : res.cursor) + innerOffset,
+                    selectionEnd: (res.selectionEnd !== undefined ? res.selectionEnd : res.cursor) + innerOffset
+                };
+            }
+
+            const newText = text.substring(0, innerOffset) + res.text + text.substring(braceBlock.end - 1);
+            const newSelStart = (res.selectionStart !== undefined ? res.selectionStart : res.cursor) + innerOffset;
+            const newSelEnd = (res.selectionEnd !== undefined ? res.selectionEnd : res.cursor) + innerOffset;
+
+            return {
+                text: newText,
+                cursor: res.cursor + innerOffset,
+                selectionStart: newSelStart,
+                selectionEnd: newSelEnd
+            };
+        }
+    }
+
+    // Case 3: Global / Top-level scope
+    return shiftTokensInScope(text, selStart, selEnd, direction);
+}
+
+export function insertTextWithUndo(textarea, text, newSelStart, newSelEnd) {
+    let success = false;
+    try {
+        if (typeof document !== "undefined" && typeof document.execCommand === "function") {
+            success = document.execCommand("insertText", false, text);
+        }
+    } catch (_) {}
+    if (!success) {
+        const s = textarea.selectionStart;
+        const e = textarea.selectionEnd;
+        const val = textarea.value;
+        textarea.value = val.substring(0, s) + text + val.substring(e);
+    }
+    if (typeof newSelStart === "number") {
+        const end = typeof newSelEnd === "number" ? newSelEnd : newSelStart;
+        textarea.setSelectionRange(newSelStart, end);
+    }
+    try {
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch (_) {}
+}
+
+export function handleAutoCloseCurlyBraces(event, textarea, effectiveSettings) {
+    if (!textarea) return false;
+    const settings = effectiveSettings || getEffectiveFormattingSettings();
+    const enabled = settings.autoCloseCurlyBraces !== undefined ? settings.autoCloseCurlyBraces : true;
+    if (!enabled) return false;
+
+    if (event.isComposing || event.keyCode === 229) return false;
+    if (event.ctrlKey || event.metaKey) return false;
+
+    const selStart = textarea.selectionStart;
+    const selEnd = textarea.selectionEnd;
+    const text = textarea.value;
+
+    if (event.key === "{" && !event.altKey) {
+        let backslashCount = 0;
+        let b = selStart - 1;
+        while (b >= 0 && text[b] === '\\') {
+            backslashCount++;
+            b--;
+        }
+        if ((backslashCount % 2) === 1) {
+            return false;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (selStart < selEnd) {
+            const selected = text.substring(selStart, selEnd);
+            insertTextWithUndo(textarea, "{" + selected + "}", selStart + 1, selEnd + 1);
+        } else {
+            insertTextWithUndo(textarea, "{}", selStart + 1, selStart + 1);
+        }
+        return true;
+    }
+
+    if (event.key === "}" && !event.altKey) {
+        if (selStart === selEnd && selStart < text.length && text[selStart] === "}") {
+            event.preventDefault();
+            event.stopPropagation();
+            textarea.setSelectionRange(selStart + 1, selStart + 1);
+            return true;
+        }
+    }
+
+    if (event.key === "Backspace" && !event.altKey) {
+        if (selStart === selEnd && selStart > 0 && selStart < text.length) {
+            if (text[selStart - 1] === "{" && text[selStart] === "}") {
+                event.preventDefault();
+                event.stopPropagation();
+                textarea.setSelectionRange(selStart - 1, selStart + 1);
+                insertTextWithUndo(textarea, "", selStart - 1, selStart - 1);
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 export function handlePromptKeyDown(event) {
     const textarea = event.target;
     if (!textarea || textarea.tagName !== "TEXTAREA" || textarea.readOnly) return;
+
+    if (handleAutoCloseCurlyBraces(event, textarea)) {
+        return;
+    }
 
     // Master Switch check
     const masterEnabled = settingValues.enableHotkeyEnhance !== undefined ? settingValues.enableHotkeyEnhance : true;
@@ -664,13 +981,16 @@ export function handlePromptKeyDown(event) {
         event.stopPropagation();
 
         const text = textarea.value;
-        const cursor = textarea.selectionStart;
+        const selStart = textarea.selectionStart;
+        const selEnd = textarea.selectionEnd;
         const direction = event.key === "ArrowRight" ? "right" : "left";
-        const result = shiftTagAtCursor(text, cursor, direction);
+        const result = shiftTagAtCursor(text, selStart, selEnd, direction);
 
         if (result.text !== text) {
             textarea.value = result.text;
-            textarea.setSelectionRange(result.cursor, result.cursor);
+            const newSelStart = result.selectionStart !== undefined ? result.selectionStart : result.cursor;
+            const newSelEnd = result.selectionEnd !== undefined ? result.selectionEnd : result.cursor;
+            textarea.setSelectionRange(newSelStart, newSelEnd);
             textarea.dispatchEvent(new Event("input", { bubbles: true }));
             textarea.dispatchEvent(new Event("change", { bubbles: true }));
         }

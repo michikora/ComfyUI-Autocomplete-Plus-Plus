@@ -125,14 +125,15 @@ export function getCanvasFormattingOverrides() {
     const overrides = {
         hasController: false,
         animaArtistMode: "Default (From Settings)",
+        autoInsertComma: "Default (From Settings)",
+        replaceUnderscore: "Default (From Settings)",
+        escapeParentheses: "Default (From Settings)",
+        autoCloseCurlyBraces: "Default (From Settings)",
         autoFormatOnBlur: "Default (From Settings)",
         formatSpaceAfterComma: "Default (From Settings)",
         formatTrimPromptEndComma: "Default (From Settings)",
         formatTrimLineEndComma: "Default (From Settings)",
         formatReplaceUnderscore: "Default (From Settings)",
-        escapeParentheses: "Default (From Settings)",
-        autoInsertComma: "Default (From Settings)",
-        replaceUnderscore: "Default (From Settings)",
         keepUnderscoresMode: "Default (From Settings)",
         keepUnderscoresList: ""
     };
@@ -144,14 +145,15 @@ export function getCanvasFormattingOverrides() {
         if (node.widgets && Array.isArray(node.widgets)) {
             for (const w of node.widgets) {
                 if (w.name === "anima_artist_mode") overrides.animaArtistMode = w.value || "Default (From Settings)";
+                else if (w.name === "auto_insert_comma") overrides.autoInsertComma = w.value || "Default (From Settings)";
+                else if (w.name === "replace_underscore") overrides.replaceUnderscore = w.value || "Default (From Settings)";
+                else if (w.name === "escape_parentheses") overrides.escapeParentheses = w.value || "Default (From Settings)";
+                else if (w.name === "auto_close_curly_braces") overrides.autoCloseCurlyBraces = w.value || "Default (From Settings)";
                 else if (w.name === "auto_format_on_blur") overrides.autoFormatOnBlur = w.value || "Default (From Settings)";
                 else if (w.name === "format_space_after_comma") overrides.formatSpaceAfterComma = w.value || "Default (From Settings)";
                 else if (w.name === "format_trim_prompt_end_comma") overrides.formatTrimPromptEndComma = w.value || "Default (From Settings)";
                 else if (w.name === "format_trim_line_end_comma") overrides.formatTrimLineEndComma = w.value || "Default (From Settings)";
                 else if (w.name === "format_replace_underscore") overrides.formatReplaceUnderscore = w.value || "Default (From Settings)";
-                else if (w.name === "escape_parentheses") overrides.escapeParentheses = w.value || "Default (From Settings)";
-                else if (w.name === "auto_insert_comma") overrides.autoInsertComma = w.value || "Default (From Settings)";
-                else if (w.name === "replace_underscore") overrides.replaceUnderscore = w.value || "Default (From Settings)";
                 else if (w.name === "keep_underscores_mode") overrides.keepUnderscoresMode = w.value || "Default (From Settings)";
                 else if (w.name === "keep_underscores_list") overrides.keepUnderscoresList = typeof w.value === "string" ? w.value : "";
             }
@@ -178,14 +180,15 @@ export function getEffectiveFormattingSettings(baseSettings = settingValues) {
     if (overrides.animaArtistMode === "Enabled" || overrides.animaArtistMode === "Disabled") {
         effective.animaArtistMode = overrides.animaArtistMode;
     }
+    effective.autoInsertComma = resolveBool(overrides.autoInsertComma, baseSettings.autoInsertComma);
+    effective.replaceUnderscore = resolveBool(overrides.replaceUnderscore, baseSettings.replaceUnderscore);
+    effective.escapeParentheses = resolveBool(overrides.escapeParentheses, baseSettings.escapeParentheses);
+    effective.autoCloseCurlyBraces = resolveBool(overrides.autoCloseCurlyBraces, baseSettings.autoCloseCurlyBraces);
     effective.autoFormatOnBlur = resolveBool(overrides.autoFormatOnBlur, baseSettings.autoFormatOnBlur);
     effective.formatSpaceAfterComma = resolveBool(overrides.formatSpaceAfterComma, baseSettings.formatSpaceAfterComma);
     effective.formatTrimPromptEndComma = resolveBool(overrides.formatTrimPromptEndComma, baseSettings.formatTrimPromptEndComma);
     effective.formatTrimLineEndComma = resolveBool(overrides.formatTrimLineEndComma, baseSettings.formatTrimLineEndComma);
     effective.formatReplaceUnderscore = resolveBool(overrides.formatReplaceUnderscore, baseSettings.formatReplaceUnderscore);
-    effective.escapeParentheses = resolveBool(overrides.escapeParentheses, baseSettings.escapeParentheses);
-    effective.autoInsertComma = resolveBool(overrides.autoInsertComma, baseSettings.autoInsertComma);
-    effective.replaceUnderscore = resolveBool(overrides.replaceUnderscore, baseSettings.replaceUnderscore);
 
     const globalList = baseSettings.formatKeepUnderscoresList || "";
     const nodeCustomList = overrides.keepUnderscoresList || "";
@@ -252,6 +255,11 @@ export function formatTagUnderscores(tag, exclusionSet = null) {
     const trimmed = tag.trim();
     if (!trimmed) return tag;
 
+    // Internal formatting placeholders protection
+    if (trimmed.includes("DPFMTBLOCK") || trimmed.includes("DP_FMT_BLOCK") || trimmed.includes("\uE000")) {
+        return tag;
+    }
+
     // 1. Wildcard calls (e.g. __wildcard__ or __path/to/file__)
     if (trimmed.startsWith("__") || trimmed.endsWith("__")) {
         return tag;
@@ -289,6 +297,36 @@ export function formatTagUnderscores(tag, exclusionSet = null) {
 
     // 7. Replace underscores with spaces for standard atomic tag
     return tag.replace(/_/g, " ");
+}
+
+function extractTopLevelBraceBlocks(line) {
+    const blocks = [];
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        let backslashCount = 0;
+        let b = i - 1;
+        while (b >= 0 && line[b] === '\\') {
+            backslashCount++;
+            b--;
+        }
+        if ((backslashCount % 2) === 1) continue;
+
+        if (c === '{') {
+            if (depth === 0) start = i;
+            depth++;
+        } else if (c === '}') {
+            if (depth > 0) {
+                depth--;
+                if (depth === 0 && start !== -1) {
+                    blocks.push({ start, end: i + 1, content: line.slice(start, i + 1) });
+                    start = -1;
+                }
+            }
+        }
+    }
+    return blocks;
 }
 
 export function formatPromptText(text, settings) {
@@ -339,12 +377,16 @@ export function formatPromptText(text, settings) {
                 });
             }
 
-            // Protect Dynamic Prompts blocks from outer comma splitting
+            // Protect Dynamic Prompts blocks (including nested ones) from outer comma splitting
             const dpPlaceholders = [];
-            let safeLine = line.replace(/\{[^{}]+\}/g, match => {
-                dpPlaceholders.push(match);
-                return `___DP_FMT_BLOCK_${dpPlaceholders.length - 1}___`;
-            });
+            const blocks = extractTopLevelBraceBlocks(line);
+            let safeLine = line;
+            for (let b = blocks.length - 1; b >= 0; b--) {
+                const block = blocks[b];
+                const placeholder = `\uE000DPFMTBLOCK${dpPlaceholders.length}\uE000`;
+                dpPlaceholders.push(block.content);
+                safeLine = safeLine.slice(0, block.start) + placeholder + safeLine.slice(block.end);
+            }
 
             // Split outer line by commas, format each segment, and rejoin
             const segments = safeLine.split(/,/);
@@ -357,7 +399,7 @@ export function formatPromptText(text, settings) {
             safeLine = formattedSegments.join(",");
 
             // Restore Dynamic Prompts blocks
-            line = safeLine.replace(/___DP_FMT_BLOCK_(\d+)___/g, (_, idx) => dpPlaceholders[parseInt(idx, 10)]);
+            line = safeLine.replace(/\uE000DPFMTBLOCK(\d+)\uE000/g, (_, idx) => dpPlaceholders[parseInt(idx, 10)]);
         }
 
         // 3. Trim trailing commas at line ends
