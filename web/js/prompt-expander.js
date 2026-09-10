@@ -993,20 +993,27 @@ export function setupPromptExpansionInterceptor() {
         }
 
         const origFetch = window.fetch;
-        window.fetch = async function (...args) {
-            const res = await origFetch.apply(this, args);
-            try {
-                const clone = res.clone();
-                pendingImportedPromptPromise = clone.json().then(data => {
-                    if (data && data.workflow && data.prompt) {
-                        const parsed = typeof data.prompt === "string" ? JSON.parse(data.prompt) : data.prompt;
-                        pendingImportedPrompt = parsed;
-                        return parsed;
+        window.fetch = function (...args) {
+            const resPromise = origFetch.apply(this, args);
+            resPromise.then(res => {
+                if (res && res.ok) {
+                    const ct = res.headers?.get("content-type") || "";
+                    if (ct.includes("json") || (!ct && !/\.(png|jpe?g|webp|gif|svg|css|js|woff2?|bin)(\?.*)?$/i.test(String(args[0] || "")))) {
+                        try {
+                            const clone = res.clone();
+                            pendingImportedPromptPromise = clone.json().then(data => {
+                                if (data && data.workflow && data.prompt) {
+                                    const parsed = typeof data.prompt === "string" ? JSON.parse(data.prompt) : data.prompt;
+                                    pendingImportedPrompt = parsed;
+                                    return parsed;
+                                }
+                                return null;
+                            }).catch(() => null);
+                        } catch (e) {}
                     }
-                    return null;
-                }).catch(() => null);
-            } catch (e) {}
-            return res;
+                }
+            }).catch(() => {});
+            return resPromise;
         };
     }
 
