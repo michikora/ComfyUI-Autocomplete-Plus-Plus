@@ -50,15 +50,63 @@ def get_available_tag_files():
     return tag_files, translation_files
 
 
+def resolve_contained_file(base_dir, subpath, allowed_exts=None):
+    if not base_dir or not subpath:
+        return None
+
+    normalized = str(subpath).replace("\\", "/").strip()
+    if not normalized:
+        return None
+
+    path_obj = Path(normalized)
+    if path_obj.is_absolute() or normalized.startswith("/") or normalized.startswith("\\"):
+        return None
+    if len(normalized) > 1 and normalized[1] == ":":
+        return None
+    if ".." in path_obj.parts:
+        return None
+
+    if allowed_exts:
+        if not any(normalized.lower().endswith(ext.lower()) for ext in allowed_exts):
+            return None
+
+    try:
+        if not os.path.exists(base_dir) or not os.path.isdir(base_dir):
+            return None
+        real_base = os.path.realpath(base_dir)
+        real_target = os.path.realpath(os.path.join(real_base, *path_obj.parts))
+
+        if os.path.commonpath([real_base, real_target]) != real_base:
+            return None
+
+        if real_target != real_base and os.path.isfile(real_target):
+            return real_target
+    except Exception:
+        return None
+
+    return None
+
+
 def find_file_path(filename):
-    """
-    Locates the target file in translations, tags, or data directory, preventing directory traversal.
-    """
-    clean_name = os.path.basename(filename)
-    for search_dir in [TRANSLATIONS_DIR, TAGS_DIR, DATA_DIR]:
-        candidate = os.path.join(search_dir, clean_name)
-        if os.path.exists(candidate) and os.path.isfile(candidate):
-            return candidate
+    if not filename:
+        return None
+
+    clean_name = str(filename).replace("\\", "/").strip()
+    allowed_dirs = [TRANSLATIONS_DIR, TAGS_DIR, DATA_DIR]
+    allowed_exts = (".csv", ".json", ".txt")
+
+    for search_dir in allowed_dirs:
+        target = resolve_contained_file(search_dir, clean_name, allowed_exts=allowed_exts)
+        if target:
+            return target
+
+    base_only = os.path.basename(clean_name)
+    if base_only and base_only != clean_name:
+        for search_dir in allowed_dirs:
+            target = resolve_contained_file(search_dir, base_only, allowed_exts=allowed_exts)
+            if target:
+                return target
+
     return None
 
 @server.PromptServer.instance.routes.get("/autocomplete-plus-plus/tags/list")
@@ -205,6 +253,13 @@ async def get_all_wildcard_data(_request):
                             rel = os.path.relpath(os.path.join(root, f), p)
                             clean = os.path.splitext(rel)[0].replace("\\", "/")
                             full_path = os.path.join(root, f)
+                            try:
+                                real_p = os.path.realpath(p)
+                                real_full = os.path.realpath(full_path)
+                                if os.path.commonpath([real_p, real_full]) != real_p:
+                                    continue
+                            except Exception:
+                                continue
                             if clean not in result and os.path.isfile(full_path):
                                 try:
                                     with open(full_path, "r", encoding="utf-8", errors="ignore") as file_obj:
@@ -239,8 +294,8 @@ async def get_wildcard_content(request):
 
     for cdir in candidate_dirs:
         for fname in [clean_txt, clean_rel]:
-            target = os.path.normpath(os.path.join(cdir, fname))
-            if os.path.exists(target) and os.path.isfile(target):
+            target = resolve_contained_file(cdir, fname, allowed_exts=(".txt",))
+            if target:
                 try:
                     with open(target, "r", encoding="utf-8", errors="ignore") as f:
                         lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
@@ -425,6 +480,13 @@ async def get_model_thumbnail(request):
             return web.json_response({"has_thumbnail": False, "url": ""})
         return web.json_response({"error": "Invalid parameters"}, status=400)
 
+    clean_name = str(name).replace("\\", "/").strip()
+    path_obj = Path(clean_name)
+    if ".." in path_obj.parts or path_obj.is_absolute() or clean_name.startswith("/") or (len(clean_name) > 1 and clean_name[1] == ":"):
+        if is_info:
+            return web.json_response({"has_thumbnail": False, "url": ""})
+        return web.json_response({"error": "Invalid model name"}, status=400)
+
     image_path = find_model_thumbnail(folder_type, name)
     has_image = bool(image_path and os.path.exists(image_path))
 
@@ -436,6 +498,22 @@ async def get_model_thumbnail(request):
             return web.json_response({"has_thumbnail": False, "url": ""})
 
     if not has_image:
+        return web.json_response({"error": "Thumbnail not found"}, status=404)
+
+    try:
+        allowed_roots = [os.path.realpath(d) for d in folder_paths.get_folder_paths(folder_type) if os.path.isdir(d)]
+        real_image = os.path.realpath(image_path)
+        is_contained = False
+        for root in allowed_roots:
+            try:
+                if os.path.commonpath([root, real_image]) == root:
+                    is_contained = True
+                    break
+            except Exception:
+                continue
+        if not is_contained:
+            return web.json_response({"error": "Thumbnail not found"}, status=404)
+    except Exception:
         return web.json_response({"error": "Thumbnail not found"}, status=404)
 
     ext = os.path.splitext(image_path)[1].lower()
