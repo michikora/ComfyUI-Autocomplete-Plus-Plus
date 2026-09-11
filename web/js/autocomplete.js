@@ -704,6 +704,7 @@ export class TagCompleteEngine {
                 "AutoInsertComma": settingValues.autoInsertComma,
                 "MaxSuggestions": settingValues.maxSuggestions,
                 "EnablePromptExpansion": settingValues.enablePromptExpansion,
+                "RestoreChoicesOnPngImport": settingValues.restoreChoicesOnPngImport,
                 "DynamicPromptMode": settingValues.dynamicPromptMode,
                 "WildcardMode": settingValues.wildcardMode,
                 "EnableHotkeyEnhance": settingValues.enableHotkeyEnhance,
@@ -756,6 +757,9 @@ export class TagCompleteEngine {
                                 const camelKey = key.charAt(0).toLowerCase() + key.slice(1);
                                 if (camelKey in settingValues) {
                                     settingValues[camelKey] = val;
+                                    if (camelKey === "restoreChoicesOnPngImport") {
+                                        window.dispatchEvent(new Event("autocomplete-restore-choices-changed"));
+                                    }
                                 }
                             }
                         } catch (_) {}

@@ -37,6 +37,8 @@ export const settingValues = {
     autoInsertComma: true,
     maxSuggestions: 15,
     enablePromptExpansion: true,
+    restoreChoicesOnPngImport: false,
+    restoreChoicesInterceptionMode: "Lite",
     wildcardMode: "Random",
     dynamicPromptMode: "Random",
     enableHotkeyEnhance: true,
@@ -159,6 +161,8 @@ try {
     settingValues.autoInsertComma = loadSetting("AutoInsertComma", true);
     settingValues.maxSuggestions = loadSetting("MaxSuggestions", 15, true);
     settingValues.enablePromptExpansion = loadSetting("EnablePromptExpansion", true);
+    settingValues.restoreChoicesOnPngImport = loadSetting("RestoreChoicesOnPngImport", false);
+    settingValues.restoreChoicesInterceptionMode = loadSetting("RestoreChoicesInterceptionMode", "Lite");
 
     // Load WildcardMode with backward compatibility
     let savedWcMode = loadSetting("WildcardMode", null);
@@ -1021,6 +1025,254 @@ export function registerSettings(app) {
         onChange: (newVal) => {
             settingValues.animaArtistMode = newVal || "Auto";
             persistSetting("AnimaArtistMode", settingValues.animaArtistMode);
+        }
+    });
+
+    const RESTORE_CHOICES_NOTICE_FULL = "Full keeps the network observer active to maximize compatibility with third-party imports. DevTools may attribute unrelated requests to prompt-expander.js, which can complicate debugging.";
+    const RESTORE_CHOICES_NOTICE_LITE = "Lite observes network responses only during detected PNG or workflow imports. It reduces DevTools source attribution issues but may miss delayed or non-standard third-party imports.";
+
+    let restoreChoicesNoticeElement = null;
+
+    const findSettingRow = (element) => {
+        if (!element) return null;
+        const row = element.closest("tr") ||
+                    element.closest(".p-field") ||
+                    element.closest(".comfy-settings-row") ||
+                    element.closest(".p-formgrid > div") ||
+                    element.closest(".settings-item");
+        if (row) return row;
+
+        let curr = element;
+        while (curr && curr !== document.body) {
+            if (curr.parentElement && (
+                curr.parentElement.tagName === "TBODY" ||
+                curr.parentElement.classList.contains("p-formgrid") ||
+                curr.parentElement.classList.contains("settings-items")
+            )) {
+                return curr;
+            }
+            curr = curr.parentElement;
+        }
+        return element.parentElement;
+    };
+
+    const updateRestoreChoicesNoticeText = (mode) => {
+        if (!restoreChoicesNoticeElement) return;
+        const currentMode = mode || settingValues.restoreChoicesInterceptionMode;
+        restoreChoicesNoticeElement.textContent = currentMode === "Full"
+            ? RESTORE_CHOICES_NOTICE_FULL
+            : RESTORE_CHOICES_NOTICE_LITE;
+    };
+
+    const findRestoreChoicesNoticeRow = () => {
+        if (restoreChoicesNoticeElement) {
+            const row = findSettingRow(restoreChoicesNoticeElement);
+            if (row) return row;
+        }
+        const settingId = id + ".RestoreChoicesNotice";
+        try {
+            const el = document.getElementById(settingId) ||
+                       document.querySelector(`[id="${CSS.escape(settingId)}"]`) ||
+                       document.querySelector(`[data-setting-id="${settingId}"]`);
+            if (el) {
+                const row = findSettingRow(el);
+                if (row) return row;
+            }
+        } catch (_) {}
+        return null;
+    };
+
+    const findModeLabelElement = () => {
+        const settingId = id + ".RestoreChoicesInterceptionMode";
+        try {
+            const byFor = document.querySelector(`label[for="${CSS.escape(settingId)}"]`);
+            if (byFor) return byFor;
+        } catch (_) {}
+
+        const candidates = document.querySelectorAll("label, span, p, td, div");
+        for (const el of candidates) {
+            if (el.textContent && el.textContent.trim() === "PNG Import Interception Mode") {
+                let childMatch = null;
+                for (const child of el.children) {
+                    if (child.textContent && child.textContent.trim() === "PNG Import Interception Mode") {
+                        childMatch = child;
+                        break;
+                    }
+                }
+                return childMatch || el;
+            }
+        }
+        return null;
+    };
+
+    const findModeControlElement = () => {
+        const settingId = id + ".RestoreChoicesInterceptionMode";
+        try {
+            const el = document.getElementById(settingId) ||
+                       document.querySelector(`[id="${CSS.escape(settingId)}"]`) ||
+                       document.querySelector(`[data-setting-id="${settingId}"]`);
+            if (el) return el;
+        } catch (_) {}
+        return null;
+    };
+
+    const getLowestCommonAncestor = (el1, el2) => {
+        if (!el1 || !el2) return el1 || el2;
+        const ancestors = new Set();
+        let curr1 = el1;
+        while (curr1 && curr1 !== document.body) {
+            ancestors.add(curr1);
+            curr1 = curr1.parentElement;
+        }
+        let curr2 = el2;
+        while (curr2 && curr2 !== document.body) {
+            if (ancestors.has(curr2)) {
+                return curr2;
+            }
+            curr2 = curr2.parentElement;
+        }
+        return null;
+    };
+
+    const findRestoreChoicesModeRow = () => {
+        const controlEl = findModeControlElement();
+        const labelEl = findModeLabelElement();
+
+        if (controlEl && labelEl) {
+            const lca = getLowestCommonAncestor(controlEl, labelEl);
+            if (lca && lca !== document.body && !lca.classList.contains("comfy-modal-content")) {
+                return lca;
+            }
+        }
+
+        if (controlEl) {
+            const row = findSettingRow(controlEl);
+            if (row) return row;
+        }
+
+        if (labelEl) {
+            const row = findSettingRow(labelEl);
+            if (row) return row;
+        }
+
+        const noticeRow = findRestoreChoicesNoticeRow();
+        if (noticeRow) {
+            if (noticeRow.previousElementSibling) return noticeRow.previousElementSibling;
+            if (noticeRow.nextElementSibling) return noticeRow.nextElementSibling;
+        }
+
+        return null;
+    };
+
+    const syncRestoreChoicesVisibility = (forcedState) => {
+        const enabled = (forcedState !== undefined) ? !!forcedState : !!settingValues.restoreChoicesOnPngImport;
+        const modeRow = findRestoreChoicesModeRow();
+        const noticeRow = findRestoreChoicesNoticeRow();
+        const modeLabel = findModeLabelElement();
+        const modeControl = findModeControlElement();
+
+        if (modeRow) {
+            modeRow.style.display = enabled ? "" : "none";
+        }
+        if (modeLabel) {
+            modeLabel.style.display = enabled ? "" : "none";
+            const labelParent = modeLabel.parentElement;
+            if (labelParent && labelParent !== modeRow && labelParent !== document.body) {
+                if (labelParent.querySelectorAll("input, select, textarea, button").length === 0) {
+                    labelParent.style.display = enabled ? "" : "none";
+                }
+            }
+        }
+        if (modeControl) {
+            modeControl.style.display = enabled ? "" : "none";
+        }
+        if (noticeRow) {
+            noticeRow.style.display = enabled ? "" : "none";
+        }
+    };
+
+    const scheduleSyncRestoreChoicesVisibility = () => {
+        requestAnimationFrame(() => syncRestoreChoicesVisibility());
+        setTimeout(() => syncRestoreChoicesVisibility(), 50);
+        setTimeout(() => syncRestoreChoicesVisibility(), 150);
+    };
+
+    window.addEventListener("autocomplete-restore-choices-changed", () => {
+        syncRestoreChoicesVisibility();
+        updateRestoreChoicesNoticeText();
+    });
+
+    if (app?.ui?.settings && typeof app.ui.settings.show === "function" && !app.ui.settings.__restoreChoicesHooked) {
+        app.ui.settings.__restoreChoicesHooked = true;
+        const origShow = app.ui.settings.show;
+        app.ui.settings.show = function () {
+            const res = origShow.apply(this, arguments);
+            scheduleSyncRestoreChoicesVisibility();
+            return res;
+        };
+    }
+
+    document.addEventListener("click", (e) => {
+        if (e.target && e.target.closest && e.target.closest(".comfy-modal, .p-dialog, #comfy-settings-dialog, .comfy-settings")) {
+            scheduleSyncRestoreChoicesVisibility();
+        }
+    }, { passive: true });
+
+    app.ui.settings.addSetting({
+        id: id + ".RestoreChoicesNotice",
+        name: "",
+        type: () => {
+            const notice = document.createElement("div");
+            notice.className = "text-sm text-muted";
+            Object.assign(notice.style, {
+                border: "1px solid rgba(239, 68, 68, 0.6)",
+                backgroundColor: "rgba(239, 68, 68, 0.06)",
+                borderRadius: "8px",
+                padding: "8px 10px",
+                maxWidth: "360px"
+            });
+            notice.textContent = settingValues.restoreChoicesInterceptionMode === "Full"
+                ? RESTORE_CHOICES_NOTICE_FULL
+                : RESTORE_CHOICES_NOTICE_LITE;
+            restoreChoicesNoticeElement = notice;
+
+            scheduleSyncRestoreChoicesVisibility();
+
+            return notice;
+        },
+        defaultValue: "",
+        category: [name, "Wildcards & Dynamic Prompts", "Restore Choices Notice"]
+    });
+
+    app.ui.settings.addSetting({
+        id: id + ".RestoreChoicesInterceptionMode",
+        name: "PNG Import Interception Mode",
+        tooltip: "Lite observes fetch requests during an import session and may miss delayed third-party imports. Full keeps the observer active for broader compatibility.",
+        type: "combo",
+        options: ["Lite", "Full"],
+        defaultValue: settingValues.restoreChoicesInterceptionMode,
+        category: [name, "Wildcards & Dynamic Prompts", "PNG Import Interception Mode"],
+        onChange: (newVal) => {
+            settingValues.restoreChoicesInterceptionMode = newVal === "Full" ? "Full" : "Lite";
+            persistSetting("RestoreChoicesInterceptionMode", settingValues.restoreChoicesInterceptionMode);
+            window.dispatchEvent(new Event("autocomplete-restore-choices-changed"));
+            updateRestoreChoicesNoticeText(settingValues.restoreChoicesInterceptionMode);
+        }
+    });
+
+    app.ui.settings.addSetting({
+        id: id + ".RestoreChoicesOnPngImport",
+        name: "Restore Choices on PNG Import (Experimental)",
+        tooltip: "Restore dynamic prompt and wildcard selections from imported PNG metadata when Keep Last Choice is active and the seed is unchanged.",
+        type: "boolean",
+        defaultValue: settingValues.restoreChoicesOnPngImport,
+        category: [name, "Wildcards & Dynamic Prompts", "Restore Choices on PNG Import"],
+        onChange: (newVal) => {
+            const enabled = !!newVal;
+            settingValues.restoreChoicesOnPngImport = enabled;
+            persistSetting("RestoreChoicesOnPngImport", enabled);
+            window.dispatchEvent(new Event("autocomplete-restore-choices-changed"));
+            syncRestoreChoicesVisibility(enabled);
         }
     });
 

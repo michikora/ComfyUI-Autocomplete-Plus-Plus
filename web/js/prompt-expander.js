@@ -20,6 +20,181 @@ let lastExecutionSnapshot = {
 let importedPngSnapshot = null;
 let pendingImportedPrompt = null;
 let pendingImportedPromptPromise = null;
+let pendingPromptResolver = null;
+let originalFetch = null;
+let isFetchHooked = false;
+let activeSessionId = 0;
+let lastSessionStartTime = 0;
+let sessionIdleTimer = null;
+let sessionTotalTimer = null;
+let restoreInterceptionReady = false;
+
+function restoreChoicesEnabled() {
+    return !!settingValues.restoreChoicesOnPngImport;
+}
+
+function hookFetchInterceptor() {
+    if (isFetchHooked || typeof window === "undefined") return;
+    originalFetch = window.fetch;
+    window.fetch = function (...args) {
+        if (restoreChoicesEnabled() && settingValues.restoreChoicesInterceptionMode === "Lite") {
+            touchRestoreImportSession(3000);
+        }
+        const result = originalFetch.apply(this, args);
+        if (!restoreChoicesEnabled()) return result;
+
+        const currentSessionId = activeSessionId;
+        result.then((res) => {
+            if (!res || !res.ok) return;
+            if (settingValues.restoreChoicesInterceptionMode === "Lite" && currentSessionId !== activeSessionId) return;
+
+            const ct = res.headers?.get("content-type") || "";
+            const url = typeof args[0] === "string" ? args[0] : (args[0]?.url || "");
+            if (ct.includes("json") || (!ct && !/\.(png|jpe?g|webp|gif|svg|css|js|woff2?|bin)(\?.*)?$/i.test(url))) {
+                let clonedJsonPromise = null;
+                try {
+                    clonedJsonPromise = res.clone().json();
+                } catch (_) {}
+                if (!clonedJsonPromise) return;
+
+                clonedJsonPromise.then((data) => {
+                    if (settingValues.restoreChoicesInterceptionMode === "Lite" && currentSessionId !== activeSessionId) return;
+                    if (!restoreChoicesEnabled()) return;
+                    if (data && data.workflow && data.prompt) {
+                        try {
+                            const parsed = typeof data.prompt === "string" ? JSON.parse(data.prompt) : data.prompt;
+                            if (parsed && typeof parsed === "object") {
+                                pendingImportedPrompt = parsed;
+                                if (pendingPromptResolver) {
+                                    pendingPromptResolver(parsed);
+                                    pendingPromptResolver = null;
+                                }
+                                if (!importedPngSnapshot && typeof app !== "undefined" && app.graph) {
+                                    try {
+                                        const workflow = app.graph.serialize ? app.graph.serialize() : null;
+                                        if (workflow) {
+                                            importedPngSnapshot = extractChoicesFromWorkflowAndPrompt(workflow, parsed);
+                                            if (importedPngSnapshot) {
+                                                logDebug(`[Autocomplete++] Captured choices from imported workflow (Seed: ${importedPngSnapshot.masterSeed}, DP: ${importedPngSnapshot.dpMap.size}, WC: ${importedPngSnapshot.wcMap.size}).`);
+                                            }
+                                        }
+                                    } catch (_) {}
+                                }
+                                if (settingValues.restoreChoicesInterceptionMode === "Lite") {
+                                    touchRestoreImportSession(3000);
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }).catch(() => {});
+            }
+        }).catch(() => {});
+        return result;
+    };
+    isFetchHooked = true;
+}
+
+function unhookFetchInterceptor() {
+    if (!isFetchHooked || typeof window === "undefined") return;
+    if (originalFetch && window.fetch !== originalFetch) {
+        window.fetch = originalFetch;
+    }
+    isFetchHooked = false;
+}
+
+function startRestoreImportSession(source = "") {
+    if (!restoreChoicesEnabled()) return;
+    const now = Date.now();
+    if (sessionIdleTimer && (now - lastSessionStartTime < 500)) {
+        touchRestoreImportSession(8000);
+        return;
+    }
+    lastSessionStartTime = now;
+    activeSessionId++;
+    const currentSessionId = activeSessionId;
+
+    clearTimeout(sessionIdleTimer);
+    sessionIdleTimer = null;
+    clearTimeout(sessionTotalTimer);
+    sessionTotalTimer = null;
+
+    if (!pendingImportedPromptPromise || pendingImportedPrompt) {
+        pendingImportedPrompt = null;
+        pendingImportedPromptPromise = new Promise((resolve) => {
+            pendingPromptResolver = resolve;
+        });
+    }
+
+    hookFetchInterceptor();
+
+    if (settingValues.restoreChoicesInterceptionMode === "Lite") {
+        sessionIdleTimer = setTimeout(() => {
+            closeRestoreImportSession(currentSessionId);
+        }, 8000);
+        sessionTotalTimer = setTimeout(() => {
+            closeRestoreImportSession(currentSessionId);
+        }, 20000);
+    }
+}
+
+function touchRestoreImportSession(ms = 3000) {
+    if (settingValues.restoreChoicesInterceptionMode !== "Lite") return;
+    clearTimeout(sessionIdleTimer);
+    const currentSessionId = activeSessionId;
+    sessionIdleTimer = setTimeout(() => {
+        closeRestoreImportSession(currentSessionId);
+    }, ms);
+}
+
+function closeRestoreImportSession(sessionId) {
+    if (sessionId !== activeSessionId) return;
+    clearTimeout(sessionIdleTimer);
+    sessionIdleTimer = null;
+    clearTimeout(sessionTotalTimer);
+    sessionTotalTimer = null;
+
+    if (pendingPromptResolver) {
+        pendingPromptResolver(null);
+        pendingPromptResolver = null;
+    }
+
+    if (settingValues.restoreChoicesInterceptionMode === "Lite") {
+        unhookFetchInterceptor();
+    }
+}
+
+export function syncRestoreChoicesInterception() {
+    if (!restoreInterceptionReady) return;
+    const enabled = restoreChoicesEnabled();
+    if (!enabled) {
+        activeSessionId++;
+        clearTimeout(sessionIdleTimer);
+        sessionIdleTimer = null;
+        clearTimeout(sessionTotalTimer);
+        sessionTotalTimer = null;
+        importedPngSnapshot = null;
+        pendingImportedPrompt = null;
+        pendingImportedPromptPromise = null;
+        if (pendingPromptResolver) {
+            pendingPromptResolver(null);
+            pendingPromptResolver = null;
+        }
+        unhookFetchInterceptor();
+        return;
+    }
+
+    if (settingValues.restoreChoicesInterceptionMode === "Full") {
+        clearTimeout(sessionIdleTimer);
+        sessionIdleTimer = null;
+        clearTimeout(sessionTotalTimer);
+        sessionTotalTimer = null;
+        hookFetchInterceptor();
+    } else {
+        if (!sessionIdleTimer && !sessionTotalTimer) {
+            unhookFetchInterceptor();
+        }
+    }
+}
 
 function createSeededRng(seed) {
     let s = (Math.abs(Number(seed)) || 1) >>> 0;
@@ -847,7 +1022,7 @@ export function processPromptPayload(payload, canvasGroundTruth = null) {
         else if (controller.dynamicPromptMode.includes("Random")) dpMode = "Random";
     }
 
-    if (importedPngSnapshot) {
+    if (importedPngSnapshot && restoreChoicesEnabled()) {
         try {
             const isSeedSameAsImport = (
                 importedPngSnapshot.masterSeed !== null &&
@@ -967,54 +1142,58 @@ export function setupPromptExpansionInterceptor() {
     loadAllWildcardData();
 
     if (typeof window !== "undefined") {
-        const handleFileDrop = async (file) => {
+        restoreInterceptionReady = true;
+        window.addEventListener("autocomplete-restore-choices-changed", syncRestoreChoicesInterception);
+        syncRestoreChoicesInterception();
+
+        const handleFileDrop = (file) => {
+            if (!restoreChoicesEnabled()) return;
+            startRestoreImportSession("file_drop");
             if (file && (file.type === "image/png" || file.name?.toLowerCase().endsWith(".png"))) {
-                const parsed = await parsePngMetadata(file);
-                if (parsed) pendingImportedPrompt = parsed;
+                parsePngMetadata(file).then((parsed) => {
+                    if (parsed && typeof parsed === "object") {
+                        pendingImportedPrompt = parsed;
+                        if (pendingPromptResolver) {
+                            pendingPromptResolver(parsed);
+                            pendingPromptResolver = null;
+                        }
+                        if (settingValues.restoreChoicesInterceptionMode === "Lite") {
+                            touchRestoreImportSession(3000);
+                        }
+                    }
+                }).catch(() => {});
             }
         };
 
         window.addEventListener("drop", (e) => {
             const file = e.dataTransfer?.files?.[0];
-            if (file) handleFileDrop(file);
+            if (file) {
+                handleFileDrop(file);
+            } else if (restoreChoicesEnabled()) {
+                startRestoreImportSession("drop_event");
+            }
         }, true);
 
         window.addEventListener("paste", (e) => {
             const file = e.clipboardData?.files?.[0];
-            if (file) handleFileDrop(file);
+            if (file) {
+                handleFileDrop(file);
+            } else if (restoreChoicesEnabled()) {
+                startRestoreImportSession("paste_event");
+            }
         }, true);
 
         if (typeof app !== "undefined" && app.handleFile) {
             const origHandleFile = app.handleFile.bind(app);
             app.handleFile = async function (file) {
-                if (file) await handleFileDrop(file);
+                if (file) {
+                    handleFileDrop(file);
+                } else if (restoreChoicesEnabled()) {
+                    startRestoreImportSession("app_handle_file");
+                }
                 return origHandleFile.apply(this, arguments);
             };
         }
-
-        const origFetch = window.fetch;
-        window.fetch = function (...args) {
-            const resPromise = origFetch.apply(this, args);
-            resPromise.then(res => {
-                if (res && res.ok) {
-                    const ct = res.headers?.get("content-type") || "";
-                    if (ct.includes("json") || (!ct && !/\.(png|jpe?g|webp|gif|svg|css|js|woff2?|bin)(\?.*)?$/i.test(String(args[0] || "")))) {
-                        try {
-                            const clone = res.clone();
-                            pendingImportedPromptPromise = clone.json().then(data => {
-                                if (data && data.workflow && data.prompt) {
-                                    const parsed = typeof data.prompt === "string" ? JSON.parse(data.prompt) : data.prompt;
-                                    pendingImportedPrompt = parsed;
-                                    return parsed;
-                                }
-                                return null;
-                            }).catch(() => null);
-                        } catch (e) {}
-                    }
-                }
-            }).catch(() => {});
-            return resPromise;
-        };
     }
 
     // 1. Hook app.loadGraphData (Workflow import interception)
@@ -1022,24 +1201,39 @@ export function setupPromptExpansionInterceptor() {
         const origLoadGraphData = app.loadGraphData.bind(app);
         app.loadGraphData = async function (graphData, clean, change_id, prompt) {
             try {
-                let activePrompt = (prompt && typeof prompt === "object" && Object.keys(prompt).length > 0)
-                    ? prompt
-                    : pendingImportedPrompt;
-
-                if (!activePrompt && pendingImportedPromptPromise) {
-                    const sniffed = await pendingImportedPromptPromise;
-                    if (sniffed) activePrompt = sniffed;
-                }
-                pendingImportedPrompt = null;
-                pendingImportedPromptPromise = null;
-
-                if (activePrompt && typeof activePrompt === "object" && Object.keys(activePrompt).length > 0 && graphData) {
-                    importedPngSnapshot = extractChoicesFromWorkflowAndPrompt(graphData, activePrompt);
-                    if (importedPngSnapshot) {
-                        logDebug(`[Autocomplete++] Captured choices from imported workflow (Seed: ${importedPngSnapshot.masterSeed}, DP: ${importedPngSnapshot.dpMap.size}, WC: ${importedPngSnapshot.wcMap.size}).`);
+                if (restoreChoicesEnabled()) {
+                    if (!sessionIdleTimer && !pendingImportedPrompt) {
+                        startRestoreImportSession("load_graph_data");
+                    } else {
+                        touchRestoreImportSession(3000);
                     }
-                } else {
-                    importedPngSnapshot = null;
+
+                    let activePrompt = (prompt && typeof prompt === "object" && Object.keys(prompt).length > 0)
+                        ? prompt
+                        : pendingImportedPrompt;
+
+                    if (!activePrompt && pendingImportedPromptPromise) {
+                        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 1500));
+                        const sniffed = await Promise.race([pendingImportedPromptPromise, timeoutPromise]);
+                        if (sniffed) activePrompt = sniffed;
+                    }
+
+                    if (activePrompt && typeof activePrompt === "object" && Object.keys(activePrompt).length > 0 && graphData) {
+                        importedPngSnapshot = extractChoicesFromWorkflowAndPrompt(graphData, activePrompt);
+                        if (importedPngSnapshot) {
+                            logDebug(`[Autocomplete++] Captured choices from imported workflow (Seed: ${importedPngSnapshot.masterSeed}, DP: ${importedPngSnapshot.dpMap.size}, WC: ${importedPngSnapshot.wcMap.size}).`);
+                        }
+                    } else {
+                        importedPngSnapshot = null;
+                    }
+
+                    pendingImportedPrompt = null;
+                    pendingImportedPromptPromise = null;
+                    pendingPromptResolver = null;
+
+                    if (settingValues.restoreChoicesInterceptionMode === "Lite") {
+                        touchRestoreImportSession(2500);
+                    }
                 }
             } catch (err) {
                 importedPngSnapshot = null;

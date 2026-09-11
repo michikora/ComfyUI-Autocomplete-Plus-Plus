@@ -73,7 +73,8 @@ Clone or copy this repository into the `custom_nodes` folder of ComfyUI.
     - **Follow Seed**: Dynamic prompt choices and wildcard sampling can follow the generation seed to maintain reproducible generation results.
     - **Keep Last Choice**: Reuses the exact choices sampled from the previous generation as long as the KSampler master seed remains unchanged. This allows you to lock in a desired random combination while fine-tuning prompts or running multi-pass workflows (e.g. Hires.fix, ADetailer).
     - **Sequential**: Cycles through wildcard lines in sequential order across successive generation runs.
-    - **Restore Choices on PNG Import (Experimental)**: When importing or dropping a generated PNG into ComfyUI while **Keep Last Choice** is active, Autocomplete++ automatically recovers the exact dynamic prompt choices and wildcard selections from that image. As long as the master seed remains unchanged, subsequent generations will reuse the restored choices instead of re-rolling.
+    - **Restore Choices on PNG Import (Experimental)**: When importing or dropping a generated PNG into ComfyUI while **Keep Last Choice** and this feature are active, Autocomplete++ automatically recovers the exact dynamic prompt choices and wildcard selections from that image. As long as the master seed remains unchanged, subsequent generations will reuse the restored choices instead of re-rolling.
+        - _Operation Modes_: To capture third-party image and workflow imports, this feature observes browser network responses (`fetch`). During observation, unrelated requests in browser DevTools may attribute their call stack origin to this extension's wrapper, which can complicate network debugging (standard request behavior and payloads are not modified, and disabling the feature completely restores original behavior). You can choose between `Lite` (default; observes requests temporarily only during import sessions to minimize DevTools overhead) and `Full` (continuous observation for broader third-party compatibility). If you frequently debug frontend network traffic, keeping this feature disabled is recommended.
         - _Note_: Only dynamic prompt choices and locally installed wildcard items can be restored. Workflows loaded from `.json` files or PNGs without embedded prompt metadata are not supported. Additionally, due to differences in hardware and runtime environments, full reproducibility of generated images cannot be guaranteed across different systems.
 - **Multi-Pass Consistency**: Ensures Pass 1, Hires.fix, and ADetailer/FaceDetailer passes receive identical sampled choices within the same generation run.
 - **Supported Syntax**:
@@ -317,6 +318,8 @@ Access settings via the ComfyUI Settings Dialog under **Autocomplete++**:
     - `Enable Prompt Expansion Engine`: Toggle prompt expansion engine on/off.
     - `Wildcards Mode`: Controls wildcard sampling behavior (`Random`, `Follow Seed`, `Keep Last Choice`, `Sequential`).
     - `Dynamic Prompts Mode`: Controls dynamic prompt choices behavior (`Random`, `Follow Seed`, `Keep Last Choice`).
+    - `Restore Choices on PNG Import`: Toggle restoring choices from imported PNG metadata (experimental, default: disabled).
+    - `PNG Import Interception Mode`: Controls network observation behavior for imports (`Lite`: temporary session observation / `Full`: continuous observation).
 
 ---
 
