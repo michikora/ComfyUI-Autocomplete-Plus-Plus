@@ -45,7 +45,9 @@ function getLineHeightPx(computedStyle, ownerDocument) {
         fontSize: computedStyle.fontSize,
         fontFamily: computedStyle.fontFamily,
         padding: '0',
-        position: 'absolute',
+        position: 'fixed',
+        top: '-99999px',
+        left: '-99999px',
         visibility: 'hidden',
     });
     ownerDocument.body.appendChild(tempNode);
@@ -54,61 +56,115 @@ function getLineHeightPx(computedStyle, ownerDocument) {
     return height;
 }
 
+const elementStyleCache = new WeakMap();
+let sharedMirror = null;
+let sharedMarker = null;
+let activeOwnerDoc = null;
+let activeElement = null;
+
+function getSharedMirror(ownerDocument) {
+    if (!sharedMirror || activeOwnerDoc !== ownerDocument || !ownerDocument.body.contains(sharedMirror)) {
+        if (sharedMirror && sharedMirror.parentNode) {
+            sharedMirror.parentNode.removeChild(sharedMirror);
+        }
+        activeOwnerDoc = ownerDocument;
+        activeElement = null;
+
+        sharedMirror = ownerDocument.createElement('div');
+        sharedMirror.setAttribute('aria-hidden', 'true');
+        Object.assign(sharedMirror.style, {
+            position: 'fixed',
+            top: '-99999px',
+            left: '-99999px',
+            visibility: 'hidden',
+            pointerEvents: 'none',
+            overflow: 'hidden',
+        });
+
+        sharedMarker = ownerDocument.createElement('span');
+        ownerDocument.body.appendChild(sharedMirror);
+    }
+    return { mirror: sharedMirror, marker: sharedMarker };
+}
+
 export function getLocalCaretCoordinates(element, position) {
     const ownerDocument = getDocument(element);
-    const view = ownerDocument.defaultView || window;
-    const isInput = element.nodeName === 'INPUT';
-    const mirror = ownerDocument.createElement('div');
-    const computed = view.getComputedStyle(element);
+    const { mirror, marker } = getSharedMirror(ownerDocument);
 
-    mirror.style.position = 'absolute';
-    mirror.style.visibility = 'hidden';
-    mirror.style.whiteSpace = 'pre-wrap';
-    if (!isInput) mirror.style.wordWrap = 'break-word';
+    let cached = elementStyleCache.get(element);
+    const currentWidth = element.clientWidth;
+    const currentHeight = element.clientHeight;
 
-    CARET_STYLE_PROPERTIES.forEach(property => {
-        if (isInput && property === 'lineHeight') {
-            if (computed.boxSizing === 'border-box') {
-                const height = parseInt(computed.height, 10) || 0;
-                const outerHeight = (parseInt(computed.paddingTop, 10) || 0)
-                    + (parseInt(computed.paddingBottom, 10) || 0)
-                    + (parseInt(computed.borderTopWidth, 10) || 0)
-                    + (parseInt(computed.borderBottomWidth, 10) || 0);
-                const targetHeight = outerHeight + (parseInt(computed.lineHeight, 10) || 0);
-                mirror.style.lineHeight = height > targetHeight
-                    ? `${height - outerHeight}px`
-                    : height === targetHeight ? computed.lineHeight : '0';
+    if (!cached || cached.width !== currentWidth || cached.height !== currentHeight) {
+        const view = ownerDocument.defaultView || window;
+        const computed = view.getComputedStyle(element);
+        const isInput = element.nodeName === 'INPUT';
+
+        const computedLineHeight = computed.lineHeight;
+        const lineHeight = computedLineHeight === 'normal'
+            ? getLineHeightPx(computed, ownerDocument)
+            : (parseFloat(computedLineHeight) || 16);
+
+        const styles = {};
+        CARET_STYLE_PROPERTIES.forEach(property => {
+            if (isInput && property === 'lineHeight') {
+                if (computed.boxSizing === 'border-box') {
+                    const height = parseInt(computed.height, 10) || 0;
+                    const outerHeight = (parseInt(computed.paddingTop, 10) || 0)
+                        + (parseInt(computed.paddingBottom, 10) || 0)
+                        + (parseInt(computed.borderTopWidth, 10) || 0)
+                        + (parseInt(computed.borderBottomWidth, 10) || 0);
+                    const targetHeight = outerHeight + (parseInt(computed.lineHeight, 10) || 0);
+                    styles.lineHeight = height > targetHeight
+                        ? `${height - outerHeight}px`
+                        : height === targetHeight ? computed.lineHeight : '0';
+                } else {
+                    styles.lineHeight = computed.height;
+                }
             } else {
-                mirror.style.lineHeight = computed.height;
+                styles[property] = computed[property];
             }
-        } else {
-            mirror.style[property] = computed[property];
+        });
+
+        cached = {
+            width: currentWidth,
+            height: currentHeight,
+            borderTopWidth: parseInt(computed.borderTopWidth, 10) || 0,
+            borderLeftWidth: parseInt(computed.borderLeftWidth, 10) || 0,
+            lineHeight,
+            isInput,
+            styles,
+        };
+        elementStyleCache.set(element, cached);
+        activeElement = null;
+    }
+
+    if (activeElement !== element) {
+        mirror.style.position = 'fixed';
+        mirror.style.top = '-99999px';
+        mirror.style.left = '-99999px';
+        mirror.style.visibility = 'hidden';
+        mirror.style.pointerEvents = 'none';
+        mirror.style.overflow = 'hidden';
+        mirror.style.whiteSpace = 'pre-wrap';
+        mirror.style.wordWrap = cached.isInput ? 'normal' : 'break-word';
+
+        for (const prop in cached.styles) {
+            mirror.style[prop] = cached.styles[prop];
         }
-    });
-
-    const computedLineHeight = computed.lineHeight;
-    const lineHeight = computedLineHeight === 'normal'
-        ? getLineHeightPx(computed, ownerDocument)
-        : (parseFloat(computedLineHeight) || 16);
-
-    mirror.style.overflow = 'hidden';
+        activeElement = element;
+    }
 
     const targetPos = (typeof position === 'number') ? position : element.selectionStart;
     mirror.textContent = element.value.substring(0, targetPos);
-
-    const marker = ownerDocument.createElement('span');
     marker.textContent = element.value.substring(targetPos) || '.';
     mirror.appendChild(marker);
-    ownerDocument.body.appendChild(mirror);
 
-    const coordinates = {
-        top: marker.offsetTop + (parseInt(computed.borderTopWidth, 10) || 0),
-        left: marker.offsetLeft + (parseInt(computed.borderLeftWidth, 10) || 0),
-        lineHeight,
+    return {
+        top: marker.offsetTop + cached.borderTopWidth,
+        left: marker.offsetLeft + cached.borderLeftWidth,
+        lineHeight: cached.lineHeight,
     };
-
-    ownerDocument.body.removeChild(mirror);
-    return coordinates;
 }
 
 export function getFixedCaretCoordinates(element, position) {
@@ -117,14 +173,12 @@ export function getFixedCaretCoordinates(element, position) {
     const rect = element.getBoundingClientRect();
     const localCaret = getLocalCaretCoordinates(element, position);
 
-    // Compute effective scale ratio between rendered DOM bounding rect and CSS offset width
     const layoutWidth = element.offsetWidth || element.clientWidth || rect.width;
     const scaleX = (layoutWidth > 0 && rect.width > 0) ? (rect.width / layoutWidth) : 1;
 
     const layoutHeight = element.offsetHeight || element.clientHeight || rect.height;
     const scaleY = (layoutHeight > 0 && rect.height > 0) ? (rect.height / layoutHeight) : 1;
 
-    // Adjusted viewport coordinates
     const left = rect.left + ((localCaret.left - element.scrollLeft) * scaleX);
     const top = rect.top + ((localCaret.top - element.scrollTop) * scaleY);
     const lineHeight = localCaret.lineHeight * scaleY;

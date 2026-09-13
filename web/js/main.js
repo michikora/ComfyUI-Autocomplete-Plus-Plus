@@ -456,7 +456,7 @@ function attachListenersToTextarea(element) {
         if (isExcludedTarget(e.target)) return;
 
         const isOverridden = isOverriddenTarget(e.target);
-        if (isOverridden && engine && engine.isVisible) {
+        if (isOverridden && engine && (engine.isVisible || engine.searchPendingRaf)) {
             const key = e.key;
             if (key === "Tab" || key === "Enter" || key === "ArrowUp" || key === "ArrowDown" || key === "Escape" || key === "PageUp" || key === "PageDown") {
                 e.stopImmediatePropagation();

@@ -629,6 +629,8 @@ export class TagCompleteEngine {
         // Key repeat suppression state
         this.isKeyRepeating = false;
         this.hasPendingInput = false;
+        this.searchPendingRaf = null;
+        this.pendingSearchTarget = null;
 
         // Floating thumbnail preview cards
         this.loraPreviewCard = null;
@@ -1982,6 +1984,7 @@ export class TagCompleteEngine {
         const normalizedQuery = searchKeyword.replace(/ /g, "_").replace(/\\/g, "").trim().toLowerCase();
         const rawKeyword = searchKeyword.trim().toLowerCase();
         const isFilterModeOnly = isSlashMode && (activeDictFilter || activeCatFilter) && !normalizedQuery;
+        const favorThreshold = Math.max(1, settingValues.favorMinCount !== undefined ? settingValues.favorMinCount : 5);
         const seen = new Set();
 
         const processTag = (tagItem, isMainDict = true) => {
@@ -2134,7 +2137,7 @@ export class TagCompleteEngine {
 
                 // Score Calculation
                 const userUsage = this.getTagUsage(tagName);
-                const isFav = userUsage > 0 && settingValues.frequencySort;
+                const isFav = settingValues.frequencySort && userUsage >= favorThreshold;
 
                 if (isFilterModeOnly) {
                     score = tagItem.count || 0;
@@ -2146,20 +2149,35 @@ export class TagCompleteEngine {
                     else if (tier === 4) tierBase = 2000000;
                     else if (tier === 5) tierBase = 1200000;
                     else if (tier === 6) tierBase = 500000;
-                    else if (tier === 7) tierBase = 300000;
+                    else if (tier === 7) tierBase = 150000;
 
                     // Main Dictionary Priority Bonus (ensures main dictionary ranks higher within every tier)
                     const mainDictBonus = isMainDict ? 100000 : 0;
-                    const usageBonus = isFav ? (userUsage * 10000) : 0;
-                    const brevityBonus = Math.max(0, 2000 - Math.min(2000, tagName.length * 20));
+                    let usageBonus = 0;
+                    if (isFav) {
+                        const usageRatio = userUsage / favorThreshold;
+                        usageBonus = Math.min(8000, 3000 + Math.log2(usageRatio) * 2000);
+                    }
 
-                    // For artists (Category 1 / /artist), prioritize higher post count (popularity) within each tier
                     const isArtistTag = tagItem.category === 1 || (activeCatFilter && activeCatFilter.name === "artist");
-                    const countBonus = isArtistTag
-                        ? Math.min(99999, tagItem.count || 0)
-                        : Math.min(1000, Math.log10((tagItem.count || 1) + 1) * 100);
 
-                    score = tierBase + mainDictBonus + usageBonus + (isArtistTag ? 0 : brevityBonus) + countBonus;
+                    // Dynamic weights based on input length: count dominates on short input, brevity activates on longer input
+                    const queryLen = normalizedQuery.length || 1;
+                    const countWeight = Math.max(1.0, 2.0 - 0.5 * (queryLen - 1));
+                    const brevityWeight = Math.min(1.0, 0.25 * queryLen);
+
+                    const baseBrevity = Math.max(0, 2000 - Math.min(2000, tagName.length * 20));
+                    const brevityBonus = isArtistTag ? 0 : (baseBrevity * brevityWeight);
+
+                    let countBonus = 0;
+                    if (isArtistTag) {
+                        countBonus = Math.min(99999, tagItem.count || 0);
+                    } else if (tagItem.count && tagItem.count > 0) {
+                        const logDiff = Math.log10(tagItem.count / 1000);
+                        countBonus = logDiff * 2000 * countWeight;
+                    }
+
+                    score = tierBase + mainDictBonus + usageBonus + brevityBonus + countBonus;
                 }
 
                 candidates.push({
@@ -2189,7 +2207,6 @@ export class TagCompleteEngine {
         let finalCandidates = [];
 
         if (settingValues.frequencySort) {
-            const favorThreshold = settingValues.favorMinCount !== undefined ? settingValues.favorMinCount : 5;
             const favorPool = candidates.filter(c => c.userUsageCount && c.userUsageCount >= favorThreshold);
             favorPool.sort((a, b) => {
                 if (b.userUsageCount !== a.userUsageCount) return b.userUsageCount - a.userUsageCount;
@@ -3894,7 +3911,27 @@ export class TagCompleteEngine {
         this.domContainer.style.display = "block";
     }
 
+    cancelPendingSearch() {
+        if (this.searchPendingRaf !== null) {
+            cancelAnimationFrame(this.searchPendingRaf);
+            this.searchPendingRaf = null;
+        }
+        this.pendingSearchTarget = null;
+    }
+
+    async flushPendingSearch() {
+        if (this.searchPendingRaf === null) return;
+        cancelAnimationFrame(this.searchPendingRaf);
+        this.searchPendingRaf = null;
+        const target = this.pendingSearchTarget;
+        this.pendingSearchTarget = null;
+        if (target) {
+            await this.triggerSearch(target);
+        }
+    }
+
     hide() {
+        this.cancelPendingSearch();
         this.isVisible = false;
         this.isInsideLoraPrefixSession = false;
         this.unlockMouseHover();
@@ -4169,6 +4206,7 @@ export class TagCompleteEngine {
     }
 
     async triggerSearch(target) {
+        this.cancelPendingSearch();
         if (!settingValues.enabled || this.isInserting) return;
         this.target = target || this.target;
         if (!this.target) return;
@@ -4186,7 +4224,7 @@ export class TagCompleteEngine {
         this.renderResults();
     }
 
-    async handleInput(event) {
+    handleInput(event) {
         if (!settingValues.enabled || this.isInserting) return;
         if (this.suppressNextSearch) {
             this.suppressNextSearch = false;
@@ -4196,6 +4234,7 @@ export class TagCompleteEngine {
 
         // Suspend candidate searches during key repeat
         if (this.isKeyRepeating) {
+            this.cancelPendingSearch();
             this.hasPendingInput = true;
             const tagword = this.extractTagword(this.target);
             if (!tagword || tagword.length < 1) {
@@ -4204,15 +4243,59 @@ export class TagCompleteEngine {
             return;
         }
 
-        // Regular single keystroke typing
+        // Immediate dismiss when tagword is empty (e.g. spaces, commas, backspaced to empty)
+        const tagword = this.extractTagword(this.target);
+        if (!tagword || tagword.length < 1) {
+            this.cancelPendingSearch();
+            this.hide();
+            return;
+        }
+
+        // Decouple search & rendering to the next animation frame for low latency keystroke display
         this.hasPendingInput = false;
-        await this.triggerSearch(this.target);
+        this.cancelPendingSearch();
+        this.pendingSearchTarget = this.target;
+        this.searchPendingRaf = requestAnimationFrame(async () => {
+            this.searchPendingRaf = null;
+            const target = this.pendingSearchTarget;
+            this.pendingSearchTarget = null;
+            if (target) {
+                await this.triggerSearch(target);
+            }
+        });
     }
 
-    handleKeyDown(event) {
+    async handleKeyDown(event) {
         // Track key repeat state for text mutation keys
         if (event.repeat) {
             this.isKeyRepeating = true;
+        }
+
+        const isAcceptKey = (
+            (event.key === "Tab" && settingValues.keyAcceptTab) ||
+            (event.key === "Enter" && settingValues.keyAcceptEnter)
+        );
+
+        if (isAcceptKey && (this.isVisible || this.searchPendingRaf)) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (this.searchPendingRaf) {
+                await this.flushPendingSearch();
+            }
+            if (this.results[this.selectedIndex]) {
+                this.insertTag(this.results[this.selectedIndex]);
+            }
+            return;
+        }
+
+        const isNavKey = event.key === "ArrowDown" || event.key === "ArrowUp" ||
+                         event.key === "PageDown" || event.key === "PageUp";
+        if (isNavKey && this.searchPendingRaf) {
+            await this.flushPendingSearch();
+        }
+
+        if (event.key === "Escape") {
+            this.cancelPendingSearch();
         }
 
         if (!this.isVisible || this.results.length === 0) return;
@@ -4286,8 +4369,10 @@ export class TagCompleteEngine {
             }
         } else if (event.key === "Escape") {
             event.preventDefault();
+            this.cancelPendingSearch();
             this.hide();
         } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            this.cancelPendingSearch();
             this.hide();
         } else if (event.key === "F1") {
             const sel = this.results[this.selectedIndex];
@@ -4357,6 +4442,7 @@ export class TagCompleteEngine {
     }
 
     handleBlur() {
+        this.cancelPendingSearch();
         setTimeout(() => {
             if (!this.domContainer.contains(document.activeElement)) {
                 this.hide();
