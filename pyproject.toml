@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-autocomplete-plus-plus"
 description = "Tag autocomplete, prompt formatting, and dynamic prompt expansion extension for ComfyUI."
-version = "1.2.1"
+version = "1.3.0"
 license = {file = "LICENSE"}
 dependencies = []
 

@@ -3,6 +3,16 @@ import { getActiveControllerNode } from "./main.js";
 
 export const modelInfoCache = new Map();
 export const modelThumbStatusCache = new Map();
+export const modelThumbMediaTypeCache = new Map();
+
+export function detectMediaType(url) {
+    if (!url || typeof url !== "string") return "image";
+    const cleanUrl = url.split("?")[0].toLowerCase();
+    if (cleanUrl.endsWith(".mp4") || cleanUrl.endsWith(".webm") || url.includes(".mp4") || url.includes(".webm")) {
+        return "video";
+    }
+    return "image";
+}
 
 export function getCanvasIntegrationsOverrides() {
     const overrides = {

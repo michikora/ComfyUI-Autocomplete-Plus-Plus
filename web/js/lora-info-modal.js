@@ -9,7 +9,7 @@ class LoraInfoModalManager {
         this.isMetaOverlayOpen = false;
         this.currentData = null;
         this.activeImgIdx = 0;
-        this.boundKeyHandler = this.handleKeyDown.bind(this);
+        this.boundKeyHandler = (e) => this.handleKeyDown(e);
     }
 
     ensureContainer() {

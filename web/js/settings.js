@@ -17,6 +17,7 @@ export const settingValues = {
     oldFormat: false,
     showWikiLinks: true,
     previewPosition: "Left",
+    previewAnimationMode: "Hover to Play",
     loraManagerMode: "Auto",
     loraPathMode: "Auto",
     enableModels: true,
@@ -141,6 +142,7 @@ try {
     settingValues.oldFormat = loadSetting("TranslationOldFormat", false);
     settingValues.showWikiLinks = loadSetting("ShowWikiLinks", true);
     settingValues.previewPosition = loadSetting("PreviewPosition", "Left");
+    settingValues.previewAnimationMode = loadSetting("PreviewAnimationMode", "Hover to Play");
     settingValues.loraManagerMode = loadSetting("LoraManagerMode", "Auto");
     settingValues.loraPathMode = loadSetting("LoraPathMode", "Auto");
     settingValues.enableModels = loadSetting("EnableModels", true);
@@ -818,6 +820,20 @@ export function registerSettings(app) {
             persistSetting("MaxSuggestions", settingValues.maxSuggestions);
         }
     });
+    app.ui.settings.addSetting({
+        id: id + ".PreviewAnimationMode",
+        name: "Preview Animation Mode",
+        tooltip: "Controls playback for video thumbnails (LoRA/Embedding).",
+        type: "combo",
+        options: ["Hover to Play", "Always Play", "Static"],
+        defaultValue: settingValues.previewAnimationMode,
+        category: [name, "Display", "Preview Animation Mode"],
+        onChange: (newVal) => {
+            settingValues.previewAnimationMode = newVal || "Hover to Play";
+            persistSetting("PreviewAnimationMode", settingValues.previewAnimationMode);
+        }
+    });
+
     app.ui.settings.addSetting({
         id: id + ".PreviewPosition",
         name: "Floating Preview Card Position",

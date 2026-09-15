@@ -315,14 +315,23 @@ MODEL_EXTENSIONS = (
     ".safetensors", ".ckpt", ".pt", ".bin", ".pth", ".onnx"
 )
 
-IMAGE_EXTS = [
-    ".png", ".jpg", ".jpeg", ".webp",
+DYNAMIC_PREVIEW_EXTS = [
+    ".preview.mp4", ".preview.webm", ".preview.gif",
+    "_preview.mp4", "_preview.webm", "_preview.gif",
+    ".thumb.mp4", ".thumb.webm", ".thumb.gif",
+    ".thumbnail.mp4", ".thumbnail.webm", ".thumbnail.gif",
+    ".mp4", ".webm", ".gif"
+]
+
+STATIC_PREVIEW_EXTS = [
     ".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp",
+    "_preview.png", "_preview.jpg", "_preview.webp",
     ".thumb.png", ".thumb.jpg", ".thumb.webp", ".thumb.jpeg",
     ".thumbnail.png", ".thumbnail.jpg", ".thumbnail.webp",
-    "_preview.png", "_preview.jpg", "_preview.webp",
-    "_thumb.png", "_thumb.jpg", "_thumb.webp"
+    ".png", ".jpg", ".jpeg", ".webp"
 ]
+
+PREVIEW_EXTS = DYNAMIC_PREVIEW_EXTS + STATIC_PREVIEW_EXTS
 
 GENERIC_COVER_NAMES = [
     "cover", "preview", "thumbnail", "thumb", "default"
@@ -345,14 +354,15 @@ def strip_model_extension(name: str) -> str:
 
 def find_image_in_directory(dir_path: str, base_names: list[str]) -> str | None:
     """
-    Checks for candidate image files in a directory using direct checks and case-insensitive scanning.
+    Checks for candidate preview media (video, gif, or image) in a directory using
+    direct checks and case-insensitive scanning with dynamic-first priority.
     """
     if not os.path.isdir(dir_path):
         return None
 
     # 1. Direct fast-path check
     for base in base_names:
-        for ext in IMAGE_EXTS:
+        for ext in PREVIEW_EXTS:
             cand = os.path.join(dir_path, base + ext)
             if os.path.isfile(cand) and os.path.getsize(cand) > 0:
                 return cand
@@ -365,10 +375,10 @@ def find_image_in_directory(dir_path: str, base_names: list[str]) -> str | None:
 
     lower_map = {f.lower(): f for f in entries if os.path.isfile(os.path.join(dir_path, f))}
 
-    # Try matching specific base names with all image extensions
+    # Try matching specific base names with prioritized extensions
     for base in base_names:
         base_l = base.lower()
-        for ext in IMAGE_EXTS:
+        for ext in PREVIEW_EXTS:
             target_l = (base_l + ext).lower()
             if target_l in lower_map:
                 full_p = os.path.join(dir_path, lower_map[target_l])
@@ -377,7 +387,7 @@ def find_image_in_directory(dir_path: str, base_names: list[str]) -> str | None:
 
     # Try generic cover names if the directory itself is a dedicated model folder
     for gen in GENERIC_COVER_NAMES:
-        for ext in [".png", ".jpg", ".jpeg", ".webp"]:
+        for ext in [".mp4", ".webm", ".gif", ".png", ".jpg", ".jpeg", ".webp"]:
             target_l = (gen + ext).lower()
             if target_l in lower_map:
                 full_p = os.path.join(dir_path, lower_map[target_l])
@@ -492,10 +502,17 @@ async def get_model_thumbnail(request):
 
     if is_info:
         if has_image:
+            ext = os.path.splitext(image_path)[1].lower()
+            media_type = "video" if ext in [".mp4", ".webm"] else "image"
             url = f"/autocomplete-plus-plus/models/thumbnail?type={folder_type}&name={quote(name)}"
-            return web.json_response({"has_thumbnail": True, "url": url})
+            return web.json_response({
+                "has_thumbnail": True,
+                "url": url,
+                "media_type": media_type,
+                "ext": ext
+            })
         else:
-            return web.json_response({"has_thumbnail": False, "url": ""})
+            return web.json_response({"has_thumbnail": False, "url": "", "media_type": "none"})
 
     if not has_image:
         return web.json_response({"error": "Thumbnail not found"}, status=404)
@@ -522,9 +539,16 @@ async def get_model_thumbnail(request):
         content_type = "image/jpeg"
     elif ext == ".webp":
         content_type = "image/webp"
+    elif ext == ".gif":
+        content_type = "image/gif"
+    elif ext == ".mp4":
+        content_type = "video/mp4"
+    elif ext == ".webm":
+        content_type = "video/webm"
 
     return web.FileResponse(image_path, headers={
         "Content-Type": content_type,
+        "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=86400"
     })
 

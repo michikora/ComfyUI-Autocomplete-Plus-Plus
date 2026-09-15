@@ -1,10 +1,13 @@
 import { app } from "/scripts/app.js";
 import { settingValues, id, isComfyThemeLight, logDebug } from "./settings.js";
 import { getFixedCaretCoordinates } from "./caret-position.js";
-import { isLoraManagerAvailable, fetchLoraManagerPreviewUrl, getLoadedLorasTriggerWords, formatSourcesShortLabel, getCachedLoraPreviewUrl, openCivitaiUrl, resolveCivitaiUrl, getEffectiveIntegrationsSettings, getLoraManagerIconImg, getExternalLinkMeta, fetchLoraModelInfo, fetchLMSyntaxFormat, getCachedLMSyntaxFormat, getLastLMSettingsFetchTime, modelInfoCache, modelThumbStatusCache, PLACEHOLDER_IMG_URL, ERROR_404_IMG_URL } from "./lora-manager-provider.js";
+import { isLoraManagerAvailable, fetchLoraManagerPreviewUrl, getLoadedLorasTriggerWords, formatSourcesShortLabel, getCachedLoraPreviewUrl, openCivitaiUrl, resolveCivitaiUrl, getEffectiveIntegrationsSettings, getLoraManagerIconImg, getExternalLinkMeta, fetchLoraModelInfo, fetchLMSyntaxFormat, getCachedLMSyntaxFormat, getLastLMSettingsFetchTime, modelInfoCache, modelThumbStatusCache, modelThumbMediaTypeCache, detectMediaType, PLACEHOLDER_IMG_URL, ERROR_404_IMG_URL } from "./lora-manager-provider.js";
 import { openLoraInfoModal } from "./lora-info-modal.js";
 import { formatTagUnderscores, buildUnderscoreExclusionSet, getEffectiveFormattingSettings, isKeepUnderscoresTextarea } from "./auto-formatter.js";
 import { getActiveControllerNode } from "./main.js";
+
+const SKIM_DEBOUNCE_MS = 200;
+const HOVER_DEBOUNCE_MS = 200;
 
 // Category definitions
 const DANBOORU_CATEGORIES = {
@@ -638,6 +641,9 @@ export class TagCompleteEngine {
         this.previewImg = null;
         this.previewTitle = null;
         this.triggerPreviewCard = null;
+        this.previewDebounceTimer = null;
+        this.activePreviewVideo = null;
+        this.activeTriggerVideos = [];
 
         this.userUsageMap = this.loadUserUsage();
 
@@ -688,6 +694,7 @@ export class TagCompleteEngine {
                 "TranslationOldFormat": settingValues.oldFormat,
                 "ShowWikiLinks": settingValues.showWikiLinks,
                 "PreviewPosition": settingValues.previewPosition,
+                "PreviewAnimationMode": settingValues.previewAnimationMode,
                 "LoraManagerMode": settingValues.loraManagerMode,
                 "EnableModels": settingValues.enableModels,
                 "AnimaArtistMode": settingValues.animaArtistMode,
@@ -970,6 +977,15 @@ export class TagCompleteEngine {
 
         document.body.appendChild(this.loraPreviewCard);
         this.previewCard = this.loraPreviewCard; // alias for backwards compatibility
+
+        if (window.ResizeObserver) {
+            const cardRo = new ResizeObserver(() => {
+                if (this.isVisible && this.loraPreviewCard && this.loraPreviewCard.style.display === "flex") {
+                    this.positionLoraPreviewCard();
+                }
+            });
+            cardRo.observe(this.loraPreviewCard);
+        }
 
         // 2. Create dedicated floating multi-model preview card (for Trigger Words)
         this.triggerPreviewCard = document.createElement("div");
@@ -3134,44 +3150,68 @@ export class TagCompleteEngine {
 
         // Fast-path 1: Known to have no thumbnail -> render placeholder directly
         if (cachedThumb === "none") {
-            renderLoraCard(PLACEHOLDER_IMG_URL);
+            renderLoraCard.call(this, PLACEHOLDER_IMG_URL, "image");
             return;
         }
 
         const intSettings = getEffectiveIntegrationsSettings();
         const isLMActive = intSettings.loraManagerMode !== "Disabled" && isLoraManagerAvailable() && item.type === "lora";
 
-        async function renderLoraCard(imgUrl) {
+        async function renderLoraCard(imgUrl, explicitType = null) {
             if (!this.isVisible || this.results[this.selectedIndex] !== item) return;
 
+            const mediaType = explicitType || modelThumbMediaTypeCache.get(cacheKey) || detectMediaType(imgUrl);
             const targetKey = cleanName || rawPath;
             if (this.currentPreviewUrl === imgUrl && this.currentPreviewTitle === targetKey && this.loraPreviewCard && this.loraPreviewCard.style.display === "flex") {
                 this.positionLoraPreviewCard();
                 return;
             }
 
-            // Pre-render Queue: Wait for BOTH image decoding and (if LM is active) model info in parallel
-            const imgLoadPromise = new Promise((resolve) => {
-                const img = new Image();
-                img.onload = () => resolve({ ok: true, img });
-                img.onerror = () => resolve({ ok: false, img });
-                img.src = imgUrl;
-            });
+            // Pre-render Queue: Wait for media decoding and (if LM is active) model info in parallel
+            const isVideo = mediaType === "video" && imgUrl !== PLACEHOLDER_IMG_URL && imgUrl !== ERROR_404_IMG_URL;
+            let preloadedVideo = null;
+            const mediaLoadPromise = isVideo
+                ? new Promise((resolve) => {
+                    const v = document.createElement("video");
+                    v.preload = "auto";
+                    v.onloadeddata = () => {
+                        preloadedVideo = v;
+                        resolve({ ok: true });
+                    };
+                    v.onerror = () => resolve({ ok: false });
+                    v.src = imgUrl;
+                })
+                : new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => resolve({ ok: true });
+                    img.onerror = () => resolve({ ok: false });
+                    img.src = imgUrl;
+                });
 
             const infoPromise = isLMActive 
                 ? fetchLoraModelInfo(targetKey).catch(() => null)
                 : Promise.resolve(null);
 
-            const [imgResult, loraInfo] = await Promise.all([imgLoadPromise, infoPromise]);
+            const [mediaResult, loraInfo] = await Promise.all([mediaLoadPromise, infoPromise]);
 
-            if (!this.isVisible || this.results[this.selectedIndex] !== item) return;
+            if (!this.isVisible || this.results[this.selectedIndex] !== item) {
+                if (preloadedVideo) {
+                    try {
+                        preloadedVideo.pause();
+                        preloadedVideo.removeAttribute("src");
+                        preloadedVideo.load();
+                    } catch (_) {}
+                }
+                return;
+            }
 
-            if (!imgResult.ok && imgUrl !== PLACEHOLDER_IMG_URL) {
-                renderLoraCard.call(this, PLACEHOLDER_IMG_URL);
+            if (!mediaResult.ok && imgUrl !== PLACEHOLDER_IMG_URL) {
+                renderLoraCard.call(this, PLACEHOLDER_IMG_URL, "image");
                 return;
             }
 
             this.loraPreviewCard.innerHTML = "";
+            this.releaseActiveVideos();
 
             const thumbContainer = document.createElement("div");
             thumbContainer.className = "acPreviewThumbContainer";
@@ -3191,11 +3231,7 @@ export class TagCompleteEngine {
                 });
             }
 
-            this.previewImg = document.createElement("img");
-            this.previewImg.className = "acPreviewImg";
-            this.previewImg.alt = "Preview";
-            this.previewImg.src = imgUrl;
-            thumbContainer.appendChild(this.previewImg);
+            this.previewImg = this.mountMediaThumbnail(thumbContainer, imgUrl, mediaType, false, preloadedVideo);
 
             let badgeStack = null;
             if (isLMActive) {
@@ -3232,7 +3268,8 @@ export class TagCompleteEngine {
 
         // Fast-path 2: Verified image already in cache -> render immediately (preloads and shows)
         if (cachedThumb && cachedThumb !== "none") {
-            renderLoraCard.call(this, cachedThumb);
+            const cachedType = modelThumbMediaTypeCache.get(cacheKey) || detectMediaType(cachedThumb);
+            renderLoraCard.call(this, cachedThumb, cachedType);
             return;
         }
 
@@ -3249,9 +3286,11 @@ export class TagCompleteEngine {
                 if (res && res.ok) {
                     const data = await res.json().catch(() => null);
                     if (data?.has_thumbnail && data.url) {
+                        const mType = data.media_type || detectMediaType(data.url);
                         modelThumbStatusCache.set(cacheKey, data.url);
+                        modelThumbMediaTypeCache.set(cacheKey, mType);
                         if (this.isVisible && this.results[this.selectedIndex] === item) {
-                            renderLoraCard.call(this, data.url);
+                            renderLoraCard.call(this, data.url, mType);
                         }
                         return;
                     }
@@ -3263,9 +3302,11 @@ export class TagCompleteEngine {
                 try {
                     const lmPreviewUrl = await fetchLoraManagerPreviewUrl(rawPath, cleanName);
                     if (lmPreviewUrl) {
+                        const mType = detectMediaType(lmPreviewUrl);
                         modelThumbStatusCache.set(cacheKey, lmPreviewUrl);
+                        modelThumbMediaTypeCache.set(cacheKey, mType);
                         if (this.isVisible && this.results[this.selectedIndex] === item) {
-                            renderLoraCard.call(this, lmPreviewUrl);
+                            renderLoraCard.call(this, lmPreviewUrl, mType);
                         }
                         return;
                     }
@@ -3274,8 +3315,9 @@ export class TagCompleteEngine {
 
             // Both local and LM have no thumbnail: mark as "none" and show placeholder
             modelThumbStatusCache.set(cacheKey, "none");
+            modelThumbMediaTypeCache.set(cacheKey, "none");
             if (this.isVisible && this.results[this.selectedIndex] === item) {
-                renderLoraCard.call(this, PLACEHOLDER_IMG_URL);
+                renderLoraCard.call(this, PLACEHOLDER_IMG_URL, "image");
             }
         })();
     }
@@ -3516,6 +3558,7 @@ export class TagCompleteEngine {
 
         // Thumbnail preview card and LoRA path
         this.triggerPreviewCard.innerHTML = "";
+        this.releaseActiveVideos();
         this.triggerPreviewCard.style.display = "flex";
 
         const sources = Array.isArray(item.sources) ? item.sources : [];
@@ -3619,21 +3662,20 @@ export class TagCompleteEngine {
             // 1. Thumbnail Container (2:3 portrait)
             const thumbContainer = document.createElement("div");
             thumbContainer.className = "acTriggerThumbContainer";
+            col.appendChild(thumbContainer);
 
             const rawPath = source.loraPath || "";
             const cleanName = source.cleanName || rawPath;
             const cacheKey = `lora:${rawPath || cleanName}`;
             const cachedThumb = modelThumbStatusCache.get(cacheKey);
+            const cachedType = modelThumbMediaTypeCache.get(cacheKey) || (cachedThumb ? detectMediaType(cachedThumb) : (source.previewUrl ? detectMediaType(source.previewUrl) : "image"));
 
             const initialSrc = (cachedThumb && cachedThumb !== "none")
                 ? cachedThumb
                 : (source.previewUrl || PLACEHOLDER_IMG_URL);
+            const initialType = (initialSrc === PLACEHOLDER_IMG_URL) ? "image" : cachedType;
 
-            const thumbImg = document.createElement("img");
-            thumbImg.className = "acTriggerThumbImg";
-            thumbImg.alt = "Thumbnail";
-            thumbImg.src = initialSrc;
-            thumbContainer.appendChild(thumbImg);
+            this.mountMediaThumbnail(thumbContainer, initialSrc, initialType, true);
 
             let badgeStack = null;
             if (isLMActive) {
@@ -3675,8 +3717,17 @@ export class TagCompleteEngine {
                         if (res && res.ok) {
                             const data = await res.json().catch(() => null);
                             if (data?.has_thumbnail && data.url) {
+                                const mType = data.media_type || detectMediaType(data.url);
                                 modelThumbStatusCache.set(cacheKey, data.url);
-                                thumbImg.src = data.url;
+                                modelThumbMediaTypeCache.set(cacheKey, mType);
+                                if (!this.isVisible || this.results[this.selectedIndex] !== item) return;
+                                thumbContainer.querySelectorAll(".acTriggerThumbMedia").forEach(el => {
+                                    if (el.tagName === "VIDEO") {
+                                        try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+                                    }
+                                    el.remove();
+                                });
+                                this.mountMediaThumbnail(thumbContainer, data.url, mType, true);
                                 return;
                             }
                         }
@@ -3689,18 +3740,26 @@ export class TagCompleteEngine {
                         try {
                             const lmPreviewUrl = await fetchLoraManagerPreviewUrl(rawPath, cleanName);
                             if (lmPreviewUrl) {
+                                const mType = detectMediaType(lmPreviewUrl);
                                 modelThumbStatusCache.set(cacheKey, lmPreviewUrl);
-                                thumbImg.src = lmPreviewUrl;
+                                modelThumbMediaTypeCache.set(cacheKey, mType);
+                                if (!this.isVisible || this.results[this.selectedIndex] !== item) return;
+                                thumbContainer.querySelectorAll(".acTriggerThumbMedia").forEach(el => {
+                                    if (el.tagName === "VIDEO") {
+                                        try { el.pause(); el.removeAttribute("src"); el.load(); } catch (_) {}
+                                    }
+                                    el.remove();
+                                });
+                                this.mountMediaThumbnail(thumbContainer, lmPreviewUrl, mType, true);
                                 return;
                             }
                         } catch (_) {}
                     }
 
                     modelThumbStatusCache.set(cacheKey, "none");
+                    modelThumbMediaTypeCache.set(cacheKey, "none");
                 })();
             }
-
-            col.appendChild(thumbContainer);
 
             // 2. Full LoRA Path and Name (2-line clamped with hover tooltip)
             const nameDiv = document.createElement("div");
@@ -3720,7 +3779,110 @@ export class TagCompleteEngine {
         });
     }
 
+    releaseActiveVideos() {
+        if (this.activePreviewVideo) {
+            try {
+                this.activePreviewVideo.pause();
+                this.activePreviewVideo.removeAttribute("src");
+                this.activePreviewVideo.load();
+            } catch (_) {}
+            this.activePreviewVideo = null;
+        }
+        if (this.activeTriggerVideos && this.activeTriggerVideos.length > 0) {
+            this.activeTriggerVideos.forEach(v => {
+                try {
+                    v.pause();
+                    v.removeAttribute("src");
+                    v.load();
+                } catch (_) {}
+            });
+            this.activeTriggerVideos = [];
+        }
+    }
+
+    mountMediaThumbnail(container, mediaUrl, explicitType = null, isTriggerCol = false, preloadedElement = null) {
+        if (!container || !mediaUrl) return null;
+        const mediaType = explicitType || detectMediaType(mediaUrl);
+        const mode = settingValues.previewAnimationMode || "Hover to Play";
+
+        if (mediaType === "video" && mediaUrl !== PLACEHOLDER_IMG_URL && mediaUrl !== ERROR_404_IMG_URL) {
+            const video = preloadedElement || document.createElement("video");
+            video.className = isTriggerCol ? "acTriggerThumbVideo acTriggerThumbMedia" : "acPreviewVideo acPreviewMedia";
+            video.muted = true;
+            video.volume = 0;
+            video.playsInline = true;
+            video.loop = true;
+            video.setAttribute("muted", "");
+            video.setAttribute("playsinline", "");
+            video.preload = "auto";
+            if (!preloadedElement) {
+                video.src = mediaUrl;
+            }
+
+            const updatePos = () => {
+                if (!isTriggerCol && this.isVisible && this.loraPreviewCard && this.loraPreviewCard.style.display === "flex") {
+                    this.positionLoraPreviewCard();
+                }
+            };
+            video.addEventListener("loadedmetadata", updatePos, { once: true });
+            video.addEventListener("loadeddata", updatePos, { once: true });
+
+            if (isTriggerCol) {
+                this.activeTriggerVideos.push(video);
+            } else {
+                this.activePreviewVideo = video;
+            }
+
+            if (mode === "Always Play") {
+                const p = video.play();
+                if (p !== undefined) p.catch(() => {});
+            } else if (mode === "Hover to Play") {
+                video.currentTime = 0;
+                video.pause();
+
+                let hoverTimer = null;
+                const targetHost = isTriggerCol ? (container.closest(".acTriggerCol") || container) : (this.loraPreviewCard || container);
+
+                targetHost.addEventListener("mouseenter", () => {
+                    if (hoverTimer) clearTimeout(hoverTimer);
+                    hoverTimer = setTimeout(() => {
+                        const p = video.play();
+                        if (p !== undefined) p.catch(() => {});
+                    }, HOVER_DEBOUNCE_MS);
+                });
+
+                targetHost.addEventListener("mouseleave", () => {
+                    if (hoverTimer) {
+                        clearTimeout(hoverTimer);
+                        hoverTimer = null;
+                    }
+                    video.pause();
+                    video.currentTime = 0;
+                });
+            } else {
+                video.currentTime = 0;
+                video.pause();
+            }
+
+            container.appendChild(video);
+            return video;
+        }
+
+
+        const img = document.createElement("img");
+        img.className = isTriggerCol ? "acTriggerThumbImg acTriggerThumbMedia" : "acPreviewImg acPreviewMedia";
+        img.alt = "Preview";
+        img.src = mediaUrl;
+        container.appendChild(img);
+        return img;
+    }
+
     hideThumbnailPreview() {
+        if (this.previewDebounceTimer) {
+            clearTimeout(this.previewDebounceTimer);
+            this.previewDebounceTimer = null;
+        }
+        this.releaseActiveVideos();
         this.currentPreviewUrl = null;
         this.currentPreviewTitle = null;
         if (this.loraPreviewCard) {
@@ -4433,11 +4595,21 @@ export class TagCompleteEngine {
             }
         });
 
-        // Trigger thumbnail preview for currently selected item
-        if (this.results[this.selectedIndex]) {
-            this.showThumbnailPreview(this.results[this.selectedIndex]);
-        } else {
-            this.hideThumbnailPreview();
+        // Trigger thumbnail preview for currently selected item with 200ms skimming debounce
+        if (this.previewDebounceTimer) {
+            clearTimeout(this.previewDebounceTimer);
+            this.previewDebounceTimer = null;
+        }
+        this.hideThumbnailPreview();
+
+        const targetItem = this.results[this.selectedIndex];
+        if (targetItem) {
+            this.previewDebounceTimer = setTimeout(() => {
+                this.previewDebounceTimer = null;
+                if (this.isVisible && this.results[this.selectedIndex] === targetItem) {
+                    this.showThumbnailPreview(targetItem);
+                }
+            }, SKIM_DEBOUNCE_MS);
         }
     }
 

@@ -964,7 +964,9 @@ body[data-theme="light"] .ac-wiki-btn:hover,
   cursor: pointer !important;
 }
 
-.acPreviewThumbContainer.clickable:hover .acPreviewImg {
+.acPreviewThumbContainer.clickable:hover .acPreviewImg,
+.acPreviewThumbContainer.clickable:hover .acPreviewVideo,
+.acPreviewThumbContainer.clickable:hover .acPreviewMedia {
   filter: brightness(1.06) !important;
 }
 
@@ -972,7 +974,9 @@ body[data-theme="light"] .ac-wiki-btn:hover,
   box-shadow: 0 0 12px var(--ac-purple-bg) !important;
 }
 
-.acPreviewImg {
+.acPreviewImg,
+.acPreviewVideo,
+.acPreviewMedia {
   width: auto !important;
   height: auto !important;
   max-width: 100% !important;
@@ -1208,7 +1212,9 @@ body[data-theme="light"] .ac-wiki-btn:hover,
   position: relative !important;
 }
 
-.acTriggerThumbImg {
+.acTriggerThumbImg,
+.acTriggerThumbVideo,
+.acTriggerThumbMedia {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover !important;

@@ -1184,7 +1184,8 @@ export function setupPromptExpansionInterceptor() {
         }, true);
 
         if (typeof app !== "undefined" && app.handleFile) {
-            const origHandleFile = app.handleFile.bind(app);
+            const rawHandleFile = app.handleFile;
+            const origHandleFile = (...args) => rawHandleFile.apply(app, args);
             app.handleFile = async function (file) {
                 if (file) {
                     handleFileDrop(file);
@@ -1198,7 +1199,8 @@ export function setupPromptExpansionInterceptor() {
 
     // 1. Hook app.loadGraphData (Workflow import interception)
     if (typeof app !== "undefined" && app.loadGraphData) {
-        const origLoadGraphData = app.loadGraphData.bind(app);
+        const rawLoadGraphData = app.loadGraphData;
+        const origLoadGraphData = (...args) => rawLoadGraphData.apply(app, args);
         app.loadGraphData = async function (graphData, clean, change_id, prompt) {
             try {
                 if (restoreChoicesEnabled()) {
@@ -1245,7 +1247,8 @@ export function setupPromptExpansionInterceptor() {
 
     // 2. Hook api.fetchApi (Network dispatch prompt expansion interception)
     if (typeof api !== "undefined" && api.fetchApi) {
-        const originalFetchApi = api.fetchApi.bind(api);
+        const rawFetchApi = api.fetchApi;
+        const originalFetchApi = (...args) => rawFetchApi.apply(api, args);
 
         api.fetchApi = function (route, options) {
             try {
